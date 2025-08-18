@@ -6,5 +6,6 @@
 """Definitions for neural networks."""
 
 from .memory import Memory
+from .discriminator import Discriminator
 
-__all__ = ["Memory"]
+__all__ = ["Memory", "Discriminator"]

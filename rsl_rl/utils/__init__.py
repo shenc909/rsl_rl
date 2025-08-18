@@ -12,3 +12,5 @@ from .utils import (
     string_to_callable,
     unpad_trajectories,
 )
+
+from .motion_loader import AMPLoader
