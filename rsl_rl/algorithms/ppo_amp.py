@@ -417,7 +417,42 @@ class PPOAMP:
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+            ppo_loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+            
+            # Process AMP loss by unpacking policy and expert AMP samples.
+            policy_state, policy_next_state = sample_amp_policy
+            expert_state, expert_next_state = sample_amp_expert
+
+            # Normalize AMP observations if a normalizer is provided.
+            if self.amp_normalizer is not None:
+                with torch.no_grad():
+                    policy_state = self.amp_normalizer.normalize(policy_state)
+                    policy_next_state = self.amp_normalizer.normalize(policy_next_state)
+                    expert_state = self.amp_normalizer.normalize(expert_state)
+                    expert_next_state = self.amp_normalizer.normalize(expert_next_state)
+
+            # Concatenate policy and expert AMP observations for the discriminator input.
+            B_pol = policy_state.size(0)
+            discriminator_input = torch.cat(
+                (
+                    torch.cat([policy_state, policy_next_state], dim=-1),
+                    torch.cat([expert_state, expert_next_state], dim=-1),
+                ),
+                dim=0,
+            )
+            discriminator_output = self.discriminator(discriminator_input)
+            policy_d, expert_d = (
+                discriminator_output[:B_pol],
+                discriminator_output[B_pol:],
+            )
+
+            # Compute discriminator losses
+            amp_loss, grad_pen_loss = self.discriminator.compute_loss(
+                policy_d, expert_d, sample_amp_expert, sample_amp_policy, lambda_=10
+            )
+            
+            # The final loss combines the PPO loss with AMP losses.
+            loss = ppo_loss + (amp_loss + grad_pen_loss)
 
             # Symmetry loss
             if self.symmetry:
@@ -480,6 +515,16 @@ class PPOAMP:
             # -- For PPO
             nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.optimizer.step()
+            
+            # Update the normalizer with current policy and expert AMP observations.
+            if self.amp_normalizer is not None:
+                self.amp_normalizer.update(policy_state)
+                self.amp_normalizer.update(expert_state)
+
+            # Compute probabilities from the discriminator logits.
+            policy_d_prob = torch.sigmoid(policy_d)
+            expert_d_prob = torch.sigmoid(expert_d)
+            
             # -- For RND
             if self.rnd_optimizer:
                 self.rnd_optimizer.step()
@@ -488,6 +533,25 @@ class PPOAMP:
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
+            
+            # -- AMP loss
+            mean_amp_loss += amp_loss.item()
+            mean_grad_pen_loss += grad_pen_loss.item()
+            mean_policy_pred += policy_d_prob.mean().item()
+            mean_expert_pred += expert_d_prob.mean().item()
+            
+            # Calculate the accuracy of the discriminator.
+            mean_accuracy_policy += torch.sum(
+                torch.round(policy_d_prob) == torch.zeros_like(policy_d_prob)
+            ).item()
+            mean_accuracy_expert += torch.sum(
+                torch.round(expert_d_prob) == torch.ones_like(expert_d_prob)
+            ).item()
+
+            # Record the total number of elements processed.
+            mean_accuracy_expert_elem += expert_d_prob.numel()
+            mean_accuracy_policy_elem += policy_d_prob.numel()
+            
             # -- RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
@@ -500,6 +564,13 @@ class PPOAMP:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
+        
+        mean_amp_loss /= num_updates
+        mean_grad_pen_loss /= num_updates
+        mean_policy_pred /= num_updates
+        mean_expert_pred /= num_updates
+        mean_accuracy_policy /= mean_accuracy_policy_elem
+        mean_accuracy_expert /= mean_accuracy_expert_elem
         # -- For RND
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
@@ -514,6 +585,10 @@ class PPOAMP:
             "value_function": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
+            "amp": mean_amp_loss,
+            "grad_pen": mean_grad_pen_loss,
+            "policy_pred": mean_policy_pred,
+            "expert_pred": mean_expert_pred
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss

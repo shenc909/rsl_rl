@@ -54,6 +54,8 @@ class Discriminator(nn.Module):
         self.loss_type = loss_type if loss_type is not None else "BCEWithLogits"
         if self.loss_type == "BCEWithLogits":
             self.loss_fun = torch.nn.BCEWithLogitsLoss()
+        elif self.loss_type == "LSGAN":
+            self.loss_fun = torch.nn.MSELoss()
         elif self.loss_type == "Wasserstein":
             self.loss_fun = None
             self.eta_wgan = eta_wgan
