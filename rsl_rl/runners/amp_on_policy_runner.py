@@ -12,7 +12,7 @@ import torch
 from collections import deque
 
 import rsl_rl
-from rsl_rl.algorithms import PPO, Distillation, PPOAMP
+from rsl_rl.algorithms import PPOAMP
 from rsl_rl.networks import Discriminator
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import (
@@ -40,10 +40,10 @@ class AMPOnPolicyRunner:
         self._configure_multi_gpu()
 
         # resolve training type depending on the algorithm
-        if self.alg_cfg["class_name"] == "PPO":
+        if self.alg_cfg["class_name"] == "PPOAMP":
             self.training_type = "rl"
-        elif self.alg_cfg["class_name"] == "Distillation":
-            self.training_type = "distillation"
+        # elif self.alg_cfg["class_name"] == "Distillation":
+        #     self.training_type = "distillation"
         else:
             raise ValueError(f"Training type not found for algorithm {self.alg_cfg['class_name']}.")
 
@@ -57,11 +57,11 @@ class AMPOnPolicyRunner:
                 self.privileged_obs_type = "critic"  # actor-critic reinforcement learnig, e.g., PPO
             else:
                 self.privileged_obs_type = None
-        if self.training_type == "distillation":
-            if "teacher" in extras["observations"]:
-                self.privileged_obs_type = "teacher"  # policy distillation
-            else:
-                self.privileged_obs_type = None
+        # if self.training_type == "distillation":
+        #     if "teacher" in extras["observations"]:
+        #         self.privileged_obs_type = "teacher"  # policy distillation
+        #     else:
+        #         self.privileged_obs_type = None
 
         # resolve dimensions of privileged observations
         if self.privileged_obs_type is not None:
@@ -94,9 +94,9 @@ class AMPOnPolicyRunner:
             self.alg_cfg["symmetry_cfg"]["_env"] = env
 
         # NOTE: to use this we need to configure the observations in the env coherently with amp observation. Tested with Manager Based envs in Isaaclab
-        amp_joint_names = self.env.cfg.observations.amp.joint_pos.params['asset_cfg'].joint_names
+        # amp_joint_names = self.env.cfg.observations.amp.joint_pos.params['asset_cfg'].joint_names
 
-        delta_t = self.env.cfg.sim.dt * self.env.cfg.decimation
+        # delta_t = self.env.cfg.sim.dt * self.env.cfg.decimation
 
         # Initilize all the ingredients required for AMP (discriminator, dataset loader)
         num_amp_obs = extras["observations"]["amp"].shape[1]
@@ -105,10 +105,10 @@ class AMPOnPolicyRunner:
             self.device,
             self.cfg["amp_data_path"],
             self.cfg["dataset_names"],
-            self.cfg["dataset_weights"],
-            delta_t,
-            self.cfg["slow_down_factor"],
-            amp_joint_names,
+            # self.cfg["dataset_weights"],
+            # delta_t,
+            # self.cfg["slow_down_factor"],
+            # amp_joint_names,
         )
         self.amp_normalizer = Normalizer(num_amp_obs, device=self.device)
         self.discriminator = Discriminator(
@@ -121,8 +121,8 @@ class AMPOnPolicyRunner:
         
         # initialize algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        self.alg: PPO | Distillation | PPOAMP = alg_class(
-            policy, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
+        self.alg: PPOAMP = alg_class(
+            policy, discriminator=self.discriminator, amp_data=amp_data, amp_normalizer=self.amp_normalizer, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
         )
 
         # store training configuration
@@ -387,6 +387,10 @@ class AMPOnPolicyRunner:
         for key, value in locs["loss_dict"].items():
             self.writer.add_scalar(f"Loss/{key}", value, locs["it"])
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
+        
+        # -- AMP
+        self.writer.add_scalar("AMP/mean_task_reward", locs["mean_task_reward_log"], locs["it"])
+        self.writer.add_scalar("AMP/mean_style_reward", locs["mean_style_reward_log"], locs["it"])
 
         # -- Policy
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
@@ -431,6 +435,8 @@ class AMPOnPolicyRunner:
                     f"""{'Mean extrinsic reward:':>{pad}} {statistics.mean(locs['erewbuffer']):.2f}\n"""
                     f"""{'Mean intrinsic reward:':>{pad}} {statistics.mean(locs['irewbuffer']):.2f}\n"""
                 )
+            log_string += f"""{'Mean task reward:':>{pad}} {locs['mean_task_reward_log']:.2f}\n"""
+            log_string += f"""{'Mean style reward:':>{pad}} {locs['mean_style_reward_log']:.2f}\n"""
             log_string += f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
             # -- episode info
             log_string += f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
