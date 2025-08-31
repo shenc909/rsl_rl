@@ -433,23 +433,31 @@ class PPOAMP:
 
             # Concatenate policy and expert AMP observations for the discriminator input.
             B_pol = policy_state.size(0)
-            discriminator_input = torch.cat(
-                (
-                    torch.cat([policy_state, policy_next_state], dim=-1),
-                    torch.cat([expert_state, expert_next_state], dim=-1),
-                ),
-                dim=0,
-            )
-            discriminator_output = self.discriminator(discriminator_input)
-            policy_d, expert_d = (
-                discriminator_output[:B_pol],
-                discriminator_output[B_pol:],
-            )
+            # discriminator_input = torch.cat(
+            #     (
+            #         torch.cat([policy_state, policy_next_state], dim=-1),
+            #         torch.cat([expert_state, expert_next_state], dim=-1),
+            #     ),
+            #     dim=0,
+            # )
+            # discriminator_output = self.discriminator(discriminator_input)
+            # policy_d, expert_d = (
+            #     discriminator_output[:B_pol],
+            #     discriminator_output[B_pol:],
+            # )
+            
+            policy_d = self.discriminator(torch.cat([policy_state, policy_next_state], dim=-1))
+            expert_d = self.discriminator(torch.cat([expert_state, expert_next_state], dim=-1))
 
             # Compute discriminator losses
-            amp_loss, grad_pen_loss = self.discriminator.compute_loss(
-                policy_d, expert_d, sample_amp_expert, sample_amp_policy, lambda_=10
-            )
+            expert_loss = torch.nn.MSELoss()(
+                expert_d, torch.ones(expert_d.size(), device=self.device))
+            policy_loss = torch.nn.MSELoss()(
+                policy_d, -1 * torch.ones(policy_d.size(), device=self.device))
+            amp_loss = 0.5 * (expert_loss + policy_loss)
+            grad_pen_loss = self.discriminator.compute_grad_pen(
+                *sample_amp_expert, lambda_=10)
+
             
             # The final loss combines the PPO loss with AMP losses.
             loss = ppo_loss + (amp_loss + grad_pen_loss)
@@ -520,10 +528,6 @@ class PPOAMP:
             if self.amp_normalizer is not None:
                 self.amp_normalizer.update(policy_state)
                 self.amp_normalizer.update(expert_state)
-
-            # Compute probabilities from the discriminator logits.
-            policy_d_prob = torch.sigmoid(policy_d)
-            expert_d_prob = torch.sigmoid(expert_d)
             
             # -- For RND
             if self.rnd_optimizer:
@@ -537,20 +541,20 @@ class PPOAMP:
             # -- AMP loss
             mean_amp_loss += amp_loss.item()
             mean_grad_pen_loss += grad_pen_loss.item()
-            mean_policy_pred += policy_d_prob.mean().item()
-            mean_expert_pred += expert_d_prob.mean().item()
+            mean_policy_pred += policy_d.mean().item()
+            mean_expert_pred += expert_d.mean().item()
             
             # Calculate the accuracy of the discriminator.
             mean_accuracy_policy += torch.sum(
-                torch.round(policy_d_prob) == torch.zeros_like(policy_d_prob)
+                torch.sign(policy_d) == -1 * torch.ones_like(policy_d)
             ).item()
             mean_accuracy_expert += torch.sum(
-                torch.round(expert_d_prob) == torch.ones_like(expert_d_prob)
+                torch.sign(expert_d) == torch.ones_like(expert_d)
             ).item()
 
             # Record the total number of elements processed.
-            mean_accuracy_expert_elem += expert_d_prob.numel()
-            mean_accuracy_policy_elem += policy_d_prob.numel()
+            mean_accuracy_expert_elem += expert_d.numel()
+            mean_accuracy_policy_elem += policy_d.numel()
             
             # -- RND loss
             if mean_rnd_loss is not None:

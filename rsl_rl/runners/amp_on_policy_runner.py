@@ -116,7 +116,6 @@ class AMPOnPolicyRunner:
             hidden_layer_sizes=self.discriminator_cfg["hidden_dims"],
             reward_scale=self.discriminator_cfg["reward_scale"],
             device=self.device,
-            loss_type=self.discriminator_cfg["loss_type"],
         ).to(self.device)
         
         # initialize algorithm
@@ -266,7 +265,7 @@ class AMPOnPolicyRunner:
                     mean_style_reward_log += style_rewards.mean().item()
 
                     # Combine the task and style rewards (TODO this can be a hyperparameters)
-                    rewards = 0.5 * rewards + 0.5 * style_rewards
+                    rewards = 0.35 * rewards + 0.65 * style_rewards
 
                     # process the step
                     self.alg.process_env_step(rewards, dones, infos)
