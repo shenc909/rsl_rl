@@ -101,6 +101,9 @@ class AMPOnPolicyRunner:
         # Initilize all the ingredients required for AMP (discriminator, dataset loader)
         num_amp_obs = extras["observations"]["amp"].shape[1]
         
+        self.task_weight = self.cfg["task_reward_weight"]
+        self.style_weight = self.cfg["style_reward_weight"]
+        
         amp_data = AMPLoader(
             self.device,
             self.cfg["amp_data_path"],
@@ -266,7 +269,7 @@ class AMPOnPolicyRunner:
                     mean_style_reward_log += style_rewards.mean().item()
 
                     # Combine the task and style rewards (TODO this can be a hyperparameters)
-                    rewards = 0.35 * rewards + 0.65 * style_rewards
+                    rewards = self.task_weight * rewards + self.style_weight * style_rewards
 
                     # process the step
                     self.alg.process_env_step(rewards, dones, infos)
