@@ -110,6 +110,7 @@ class AMPOnPolicyRunner:
             # self.cfg["slow_down_factor"],
             # amp_joint_names,
         )
+        
         self.amp_normalizer = Normalizer(num_amp_obs, device=self.device)
         self.discriminator = Discriminator(
             input_dim=num_amp_obs* 2,  # the discriminator takes in the concatenation of the current and next observation

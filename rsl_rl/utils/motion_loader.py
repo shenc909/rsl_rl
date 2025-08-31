@@ -256,8 +256,8 @@ class AMPLoader:
         """
         
         md_arr: List[MotionData] = []
-        
-        data = np.load(str(dataset_path), allow_pickle=True).item()
+
+        data: dict[str, torch.Tensor] = np.load(str(dataset_path), allow_pickle=True).item()
 
         # num_timesteps_in_data = (data["velocity_commands"]).shape[0]
         num_envs = (data["velocity_commands"]).shape[1]
@@ -347,7 +347,7 @@ class AMPLoader:
         Args:
             number_of_samples: Number of samples to retrieve
         Returns:
-            Tuple of (quat, joint_positions, joint_velocities, base_lin_velocities, base_ang_velocities)
+            Tuple of (joint_positions, joint_velocities, base_lin_velocities, base_ang_velocities, projected_gravity)
         """
         idx = torch.multinomial(
             self.per_frame_weights, number_of_samples, replacement=True

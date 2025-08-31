@@ -118,7 +118,15 @@ class PPOAMP:
         
         
         # Create optimizer
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+        
+        params = [
+            {'params': self.policy.parameters()},
+            {'params': self.discriminator.trunk.parameters(),
+             'weight_decay': 10e-4, 'name': 'amp_trunk'},
+            {'params': self.discriminator.linear.parameters(),
+             'weight_decay': 10e-2, 'name': 'amp_output'}]
+
+        self.optimizer = optim.Adam(params, lr=learning_rate)
         # Create rollout storage
         self.storage: RolloutStorage = None  # type: ignore
         self.transition = RolloutStorage.Transition()
@@ -432,7 +440,7 @@ class PPOAMP:
                     expert_next_state = self.amp_normalizer.normalize(expert_next_state)
 
             # Concatenate policy and expert AMP observations for the discriminator input.
-            B_pol = policy_state.size(0)
+            # B_pol = policy_state.size(0)
             # discriminator_input = torch.cat(
             #     (
             #         torch.cat([policy_state, policy_next_state], dim=-1),
