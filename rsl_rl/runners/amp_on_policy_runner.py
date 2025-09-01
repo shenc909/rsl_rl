@@ -263,13 +263,13 @@ class AMPOnPolicyRunner:
                     # Process the AMP reward
                     style_rewards = self.discriminator.predict_reward(
                         amp_obs, next_amp_obs, normalizer=self.amp_normalizer
-                    )
+                    ) * self.delta_t
 
                     mean_task_reward_log += rewards.mean().item()
                     mean_style_reward_log += style_rewards.mean().item()
 
                     # Combine the task and style rewards (TODO this can be a hyperparameters)
-                    rewards = self.task_weight * rewards + self.style_weight * style_rewards * self.delta_t
+                    rewards = self.task_weight * rewards + self.style_weight * style_rewards
 
                     # process the step
                     self.alg.process_env_step(rewards, dones, infos)
