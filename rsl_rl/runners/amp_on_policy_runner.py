@@ -96,7 +96,7 @@ class AMPOnPolicyRunner:
         # NOTE: to use this we need to configure the observations in the env coherently with amp observation. Tested with Manager Based envs in Isaaclab
         # amp_joint_names = self.env.cfg.observations.amp.joint_pos.params['asset_cfg'].joint_names
 
-        # delta_t = self.env.cfg.sim.dt * self.env.cfg.decimation
+        self.delta_t = self.env.cfg.sim.dt * self.env.cfg.decimation
 
         # Initilize all the ingredients required for AMP (discriminator, dataset loader)
         num_amp_obs = extras["observations"]["amp"].shape[1]
@@ -269,7 +269,7 @@ class AMPOnPolicyRunner:
                     mean_style_reward_log += style_rewards.mean().item()
 
                     # Combine the task and style rewards (TODO this can be a hyperparameters)
-                    rewards = self.task_weight * rewards + self.style_weight * style_rewards
+                    rewards = self.task_weight * rewards + self.style_weight * style_rewards * self.delta_t
 
                     # process the step
                     self.alg.process_env_step(rewards, dones, infos)
