@@ -286,6 +286,9 @@ class OnPolicyRunner:
         # Save the final model after training
         if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+        
+        if self.logger_type in ["wandb", "neptune"]:
+            self.writer.stop()
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
         # Compute the collection size
