@@ -25,17 +25,17 @@ class PPODreamWAQ:
     def __init__(
         self,
         policy,
-        num_learning_epochs=1,
-        num_mini_batches=1,
+        num_learning_epochs=5,
+        num_mini_batches=4,
         clip_param=0.2,
-        gamma=0.998,
+        gamma=0.99,
         lam=0.95,
         value_loss_coef=1.0,
-        entropy_coef=0.0,
-        learning_rate=1e-3,
+        entropy_coef=0.01,
+        learning_rate=0.001,
         max_grad_norm=1.0,
         use_clipped_value_loss=True,
-        schedule="fixed",
+        schedule="adaptive",
         desired_kl=0.01,
         device="cpu",
         normalize_advantage_per_mini_batch=False,
@@ -45,8 +45,6 @@ class PPODreamWAQ:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
-        obs_hist_dict: dict | None = None,
-        history_length: int | None = None,
     ):
         # device-related parameters
         self.device = device
@@ -101,18 +99,6 @@ class PPODreamWAQ:
         # Create rollout storage
         self.storage: RolloutStorage = None  # type: ignore
         self.transition = RolloutStorage.Transition()
-        
-        self.history_length = history_length
-        self.obs_hist_dict = obs_hist_dict
-        
-        # generate history indices since obs history stacks using AAABBBCCC instead of ABCABCABC
-        self.history_indices = []
-        sum = 0
-        for key, dim in self.obs_hist_dict.items():
-            for h in range(self.history_length - 1):
-                self.history_indices += list(range(sum + h * dim, sum + (h + 1) * dim))
-            sum += dim * self.history_length
-        # print(self.history_indices)
 
         # PPO parameters
         self.clip_param = clip_param
@@ -128,26 +114,18 @@ class PPODreamWAQ:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
-        self.prev_critic_obs = None
+        self.prev_obs = None
 
     def init_storage(
-        self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, obs_hist_shape, actions_shape
+        self, training_type, num_envs, num_transitions_per_env, obs, actions_shape
     ):
-        # create memory for RND as well :)
-        if self.rnd:
-            rnd_state_shape = [self.rnd.num_states]
-        else:
-            rnd_state_shape = None
         # create rollout storage
         self.storage = RolloutStorage(
             training_type,
             num_envs,
             num_transitions_per_env,
-            actor_obs_shape,
-            critic_obs_shape,
-            obs_hist_shape,
+            obs,
             actions_shape,
-            rnd_state_shape,
             self.device,
         )
     
@@ -157,30 +135,33 @@ class PPODreamWAQ:
     def train_mode(self):
         self.policy.train()
 
-    def act(self, obs, critic_obs, obs_history):
+    def act(self, obs):
         # assume obs_history is a history of obs of length n, including the current obs
         # history is implemented as a circular buffer with first element being the oldest, last element being the latest
-        obs_history = obs_history[:, self.history_indices]
         if self.policy.is_recurrent:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # compute the actions and values
-        self.transition.actions = self.policy.act(obs,obs_history).detach()
-        self.transition.values = self.policy.evaluate(critic_obs).detach()
+        self.transition.actions = self.policy.act(obs).detach()
+        self.transition.values = self.policy.evaluate(obs).detach()
         self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.policy.action_mean.detach()
         self.transition.action_sigma = self.policy.action_std.detach()
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
-        self.transition.observation_history = obs_history
-        self.transition.privileged_observations = critic_obs
-        if self.prev_critic_obs is None:
-            self.prev_critic_obs = torch.zeros_like(critic_obs).detach()
+        if self.prev_obs is None:
+            self.transition.previous_observations = self.policy.get_zero_actor_obs(obs).detach()
         else:
-            self.transition.prev_privileged_obs = self.prev_critic_obs.detach()
-        self.prev_critic_obs = critic_obs
+            self.transition.previous_observations = self.prev_obs.detach()
+        self.prev_obs = obs
+        
         return self.transition.actions
 
-    def process_env_step(self, rewards, dones, infos):
+    def process_env_step(self, obs, rewards, dones, extras):
+        # update the normalizers
+        self.policy.update_normalization(obs)
+        if self.rnd:
+            self.rnd.update_normalization(obs)
+            
         # Record the rewards and dones
         # Note: we clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
@@ -188,20 +169,15 @@ class PPODreamWAQ:
 
         # Compute the intrinsic rewards and add to extrinsic rewards
         if self.rnd:
-            # Obtain curiosity gates / observations from infos
-            rnd_state = infos["observations"]["rnd_state"]
             # Compute the intrinsic rewards
-            # note: rnd_state is the gated_state after normalization if normalization is used
-            self.intrinsic_rewards, rnd_state = self.rnd.get_intrinsic_reward(rnd_state)
+            self.intrinsic_rewards = self.rnd.get_intrinsic_reward(obs)
             # Add intrinsic rewards to extrinsic rewards
             self.transition.rewards += self.intrinsic_rewards
-            # Record the curiosity gates
-            self.transition.rnd_state = rnd_state.clone()
 
         # Bootstrapping on time outs
-        if "time_outs" in infos:
+        if "time_outs" in extras:
             self.transition.rewards += self.gamma * torch.squeeze(
-                self.transition.values * infos["time_outs"].unsqueeze(1).to(self.device), 1
+                self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device), 1
             )
 
         # record the transition
@@ -209,9 +185,9 @@ class PPODreamWAQ:
         self.transition.clear()
         self.policy.reset(dones)
 
-    def compute_returns(self, last_critic_obs):
+    def compute_returns(self, obs):
         # compute value for the last step
-        last_values = self.policy.evaluate(last_critic_obs).detach()
+        last_values = self.policy.evaluate(obs).detach()
         self.storage.compute_returns(
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
@@ -241,9 +217,7 @@ class PPODreamWAQ:
         # iterate over batches
         for (
             obs_batch,
-            critic_obs_batch,
-            prev_critic_obs_batch,
-            obs_hist_batch,
+            prev_obs_batch,
             actions_batch,
             target_values_batch,
             advantages_batch,
@@ -253,14 +227,13 @@ class PPODreamWAQ:
             old_sigma_batch,
             hid_states_batch,
             masks_batch,
-            rnd_state_batch,
         ) in generator:
 
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
             num_aug = 1
             # original batch size
-            original_batch_size = obs_batch.shape[0]
+            original_batch_size = obs_batch.batch_size[0]
 
             # check if we should normalize advantages per mini batch
             if self.normalize_advantage_per_mini_batch:
@@ -273,13 +246,10 @@ class PPODreamWAQ:
                 data_augmentation_func = self.symmetry["data_augmentation_func"]
                 # returned shape: [batch_size * num_aug, ...]
                 obs_batch, actions_batch = data_augmentation_func(
-                    obs=obs_batch, actions=actions_batch, env=self.symmetry["_env"], obs_type="policy"
-                )
-                critic_obs_batch, _ = data_augmentation_func(
-                    obs=critic_obs_batch, actions=None, env=self.symmetry["_env"], obs_type="critic"
+                    obs=obs_batch, actions=actions_batch, env=self.symmetry["_env"]
                 )
                 # compute number of augmentations per sample
-                num_aug = int(obs_batch.shape[0] / original_batch_size)
+                num_aug = int(obs_batch.batch_size[0] / original_batch_size)
                 # repeat the rest of the batch
                 # -- actor
                 old_actions_log_prob_batch = old_actions_log_prob_batch.repeat(num_aug, 1)
@@ -291,10 +261,10 @@ class PPODreamWAQ:
             # Recompute actions log prob and entropy for current batch of transitions
             # Note: we need to do this because we updated the policy with the new parameters
             # -- actor
-            self.policy.act(obs_batch, obs_hist_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+            self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
             # -- critic
-            value_batch = self.policy.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
+            value_batch = self.policy.evaluate(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
             # -- entropy
             # we only keep the entropy of the first augmentation (the original one)
             mu_batch = self.policy.action_mean[:original_batch_size]
@@ -339,11 +309,11 @@ class PPODreamWAQ:
                         param_group["lr"] = self.learning_rate
 
             #Beta VAE loss
-            code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent = self.policy.cenet_forward(obs_hist_batch)
+            code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent = self.policy.cenet_forward(obs_batch)
 
             # NOTE: Update prev critic obs batch indices to get the correct elements for linear body velocity
-            vel_target = prev_critic_obs_batch[:,4:7]
-            decode_target = obs_batch
+            vel_target = self.policy.get_vel_target(prev_obs_batch)
+            decode_target = self.policy.get_actor_obs(obs_batch)
             vel_target.requires_grad = False
             decode_target.requires_grad = False
             autoenc_loss = (nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target) + beta*(-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp())))/self.num_mini_batches
@@ -376,7 +346,7 @@ class PPODreamWAQ:
                 if not self.symmetry["use_data_augmentation"]:
                     data_augmentation_func = self.symmetry["data_augmentation_func"]
                     obs_batch, _ = data_augmentation_func(
-                        obs=obs_batch, actions=None, env=self.symmetry["_env"], obs_type="policy"
+                        obs=obs_batch, actions=None, env=self.symmetry["_env"]
                     )
                     # compute number of augmentations per sample
                     num_aug = int(obs_batch.shape[0] / original_batch_size)
@@ -390,7 +360,7 @@ class PPODreamWAQ:
                 #   However, the symmetry loss is computed using the mean of the distribution.
                 action_mean_orig = mean_actions_batch[:original_batch_size]
                 _, actions_mean_symm_batch = data_augmentation_func(
-                    obs=None, actions=action_mean_orig, env=self.symmetry["_env"], obs_type="policy"
+                    obs=None, actions=action_mean_orig, env=self.symmetry["_env"]
                 )
 
                 # compute the loss (we skip the first augmentation as it is the original one)
@@ -406,6 +376,11 @@ class PPODreamWAQ:
 
             # Random Network Distillation loss
             if self.rnd:
+                # extract the rnd_state
+                # TODO: Check if we still need torch no grad. It is just an affine transformation.
+                with torch.no_grad():
+                    rnd_state_batch = self.rnd.get_rnd_state(obs_batch[:original_batch_size])
+                    rnd_state_batch = self.rnd.state_normalizer(rnd_state_batch)
                 # predict the embedding and the target
                 predicted_embedding = self.rnd.predictor(rnd_state_batch)
                 target_embedding = self.rnd.target(rnd_state_batch).detach()

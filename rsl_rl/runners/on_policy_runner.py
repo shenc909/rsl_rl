@@ -40,25 +40,7 @@ class OnPolicyRunner:
 
         # check if multi-gpu is enabled
         self._configure_multi_gpu()
-
-
-        self.obs_history_required = False
-        self.training_subtype = ""
-        elif self.alg_cfg["class_name"] == "PPODreamWAQ":
-            self.training_type = "rl"
-            self.training_subtype = "dreamwaq"
-            self.obs_history_required = True
-
-        # resolve type of privileged observations
-        if "obs_history" in env_obs:
-            self.obs_history_provided = True
-        else:
-            self.obs_history_provided = False
-
-        # check if history is required
-        if self.obs_history_required and not self.obs_history_provided:
-            raise ValueError("Observation history is required by the algorithm but not provided by the environment.")
-
+        
         # store training configuration
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
@@ -97,8 +79,6 @@ class OnPolicyRunner:
 
         # start learning
         obs = self.env.get_observations().to(self.device)
-        if self.obs_history_required:
-            obs_history = extras["observations"].get("obs_history", obs).to(self.device)
 
         self.train_mode()  # switch to train mode (for dropout for example)
 
@@ -131,10 +111,7 @@ class OnPolicyRunner:
                 for _ in range(self.num_steps_per_env):
                     # Sample actions
                     
-                    if self.training_subtype == "dreamwaq":
-                        actions = self.alg.act(obs, privileged_obs, **obs_history)
-                    else:
-                        actions = self.alg.act(obs)
+                    actions = self.alg.act(obs)
 
                     # Step the environment
                     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
@@ -454,13 +431,13 @@ class OnPolicyRunner:
 
         # initialize the actor-critic
         actor_critic_class = eval(self.policy_cfg.pop("class_name"))
-        actor_critic: ActorCritic | ActorCriticRecurrent = actor_critic_class(
+        actor_critic: ActorCritic | ActorCriticRecurrent | ActorCriticDWAQ = actor_critic_class(
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
         # initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
+        alg: PPO | PPODreamWAQ = alg_class(actor_critic, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
 
         # initialize the storage
         alg.init_storage(

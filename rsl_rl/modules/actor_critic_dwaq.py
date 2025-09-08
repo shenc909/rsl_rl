@@ -3,22 +3,28 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
+from tensordict import TensorDict
 
-from rsl_rl.utils import resolve_nn_activation
+from rsl_rl.networks import MLP, EmpiricalNormalization
 
 class ActorCriticDWAQ(nn.Module):
+    is_recurrent = False
     def __init__(
         self, 
-        num_actor_obs, 
-        num_critic_obs, 
-        num_actions, 
+        obs,
+        obs_groups,
+        num_actions,
         cenet_in_dim, 
-        cenet_out_dim, 
+        cenet_out_dim,
+        actor_obs_normalization=False,
+        critic_obs_normalization=False, 
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
         activation="elu", 
         init_noise_std=1.0,
         noise_std_type: str = "scalar",
+        history_length=3,
+        obs_hist_dict=dict(),
         **kwargs,
     ):
         if kwargs:
@@ -28,56 +34,71 @@ class ActorCriticDWAQ(nn.Module):
             )
         super().__init__()
 
-        self.activation = resolve_nn_activation(activation)
+        # get the observation dimensions
+        self.obs_groups = obs_groups
+        num_actor_obs = 0
+        for obs_group in obs_groups["policy"]:
+            assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
+            num_actor_obs += obs[obs_group].shape[-1]
+        num_critic_obs = 0
+        for obs_group in obs_groups["critic"]:
+            assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
+            num_critic_obs += obs[obs_group].shape[-1]
+        
+        self.history_length = history_length
+        self.obs_hist_dict = obs_hist_dict
+        
+        # generate history indices since obs history stacks using AAABBBCCC instead of ABCABCABC
+        self.history_indices = []
+        sum = 0
+        for key, dim in self.obs_hist_dict.items():
+            for h in range(self.history_length - 1):
+                self.history_indices += list(range(sum + h * dim, sum + (h + 1) * dim))
+            sum += dim * self.history_length
+        # print(self.history_indices)
 
-        mlp_input_dim_a = num_actor_obs
-        mlp_input_dim_c = num_critic_obs
-        # Policy
-        actor_layers = []
-        actor_layers.append(nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]))
-        actor_layers.append(activation)
-        for layer_index in range(len(actor_hidden_dims)):
-            if layer_index == len(actor_hidden_dims) - 1:
-                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], num_actions))
-            else:
-                actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], actor_hidden_dims[layer_index + 1]))
-                actor_layers.append(activation)
-        self.actor = nn.Sequential(*actor_layers)
-
-        # Value function
-        critic_layers = []
-        critic_layers.append(nn.Linear(mlp_input_dim_c, critic_hidden_dims[0]))
-        critic_layers.append(activation)
-        for layer_index in range(len(critic_hidden_dims)):
-            if layer_index == len(critic_hidden_dims) - 1:
-                critic_layers.append(nn.Linear(critic_hidden_dims[layer_index], 1))
-            else:
-                critic_layers.append(nn.Linear(critic_hidden_dims[layer_index], critic_hidden_dims[layer_index + 1]))
-                critic_layers.append(activation)
-        self.critic = nn.Sequential(*critic_layers)
-
+        # actor
+        self.actor = MLP(num_actor_obs + cenet_out_dim, num_actions, actor_hidden_dims, activation)
+        # actor observation normalization
+        self.actor_obs_normalization = actor_obs_normalization
+        if actor_obs_normalization:
+            self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
+        else:
+            self.actor_obs_normalizer = torch.nn.Identity()
         print(f"Actor MLP: {self.actor}")
+
+        # critic
+        self.critic = MLP(num_critic_obs, 1, critic_hidden_dims, activation)
+        # critic observation normalization
+        self.critic_obs_normalization = critic_obs_normalization
+        if critic_obs_normalization:
+            self.critic_obs_normalizer = EmpiricalNormalization(num_critic_obs)
+        else:
+            self.critic_obs_normalizer = torch.nn.Identity()
         print(f"Critic MLP: {self.critic}")
 
         # CENet
-        self.encoder = nn.Sequential(
-            nn.Linear(cenet_in_dim,128),
-            self.activation,
-            nn.Linear(128,64),
-            self.activation,
-        )
+        # self.encoder = nn.Sequential(
+        #     nn.Linear(cenet_in_dim,128),
+        #     self.activation,
+        #     nn.Linear(128,64),
+        #     self.activation,
+        # )
+        self.encoder = MLP(cenet_in_dim,64,[128],activation)
+        
         self.encode_mean_latent = nn.Linear(64,cenet_out_dim-3)
         self.encode_logvar_latent = nn.Linear(64,cenet_out_dim-3)
         self.encode_mean_vel = nn.Linear(64,3)
         self.encode_logvar_vel = nn.Linear(64,3)
 
-        self.decoder = nn.Sequential(
-            nn.Linear(cenet_out_dim,64),
-            self.activation,
-            nn.Linear(64,128),
-            self.activation,
-            nn.Linear(128,45)
-        )
+        self.decoder = MLP(cenet_out_dim,45,[128,64],activation)
+        # self.decoder = nn.Sequential(
+        #     nn.Linear(cenet_out_dim,64),
+        #     self.activation,
+        #     nn.Linear(64,128),
+        #     self.activation,
+        #     nn.Linear(128,45)
+        # )
 
         # Action noise
         self.noise_std_type = noise_std_type
@@ -93,14 +114,6 @@ class ActorCriticDWAQ(nn.Module):
         # disable args validation for speedup
         Normal.set_default_validate_args(False)
 
-    @staticmethod
-    # not used at the moment
-    def init_weights(sequential, scales):
-        [
-            torch.nn.init.orthogonal_(module.weight, gain=scales[idx])
-            for idx, module in enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))
-        ]
-
     def reset(self, dones=None):
         pass
 
@@ -113,8 +126,9 @@ class ActorCriticDWAQ(nn.Module):
         code = mean + var*code_temp
         return code
     
-    def cenet_forward(self,obs_history):
-        distribution = self.encoder(obs_history)
+    def cenet_forward(self,obs):
+        history_obs  = self.get_history_obs(obs)
+        distribution = self.encoder(history_obs)
         mean_latent = self.encode_mean_latent(distribution)
         logvar_latent = self.encode_logvar_latent(distribution)
         # var = torch.exp(logvar_latent*0.5)
@@ -158,25 +172,71 @@ class ActorCriticDWAQ(nn.Module):
         # create distribution
         self.distribution = Normal(mean, std)
 
-    def act(self, observations, obs_history, **kwargs):
-        code,_,decode,_,_,_,_ = self.cenet_forward(obs_history)
-        observations = torch.cat((code,observations),dim=-1)
+    def act(self, obs, **kwargs):
+        actor_obs = self.get_actor_obs(obs)
+        actor_obs = self.actor_obs_normalizer(actor_obs)
+        code,_,decode,_,_,_,_ = self.cenet_forward(obs)
+        observations = torch.cat((code,actor_obs),dim=-1)
         self.update_distribution(observations)
         return self.distribution.sample()
 
+    def act_inference(self, obs, **kwargs):
+        actor_obs = self.get_actor_obs(obs)
+        actor_obs = self.actor_obs_normalizer(actor_obs)
+        code,_,decode,_,_,_,_ = self.cenet_forward(obs)
+        observations = torch.cat((code,actor_obs),dim=-1)
+        return self.actor(observations)
+
+    def evaluate(self, obs, **kwargs):
+        obs = self.get_critic_obs(obs)
+        obs = self.critic_obs_normalizer(obs)
+        value = self.critic(obs)
+        return value
+    
+    def get_actor_obs(self, obs):
+        obs_list = []
+        for obs_group in self.obs_groups["policy"]:
+            obs_list.append(obs[obs_group])
+        return torch.cat(obs_list, dim=-1)
+
+    def get_critic_obs(self, obs):
+        obs_list = []
+        for obs_group in self.obs_groups["critic"]:
+            obs_list.append(obs[obs_group])
+        return torch.cat(obs_list, dim=-1)
+    
+    def get_history_obs(self, obs):
+        obs_list = []
+        # print(self.history_indices.__len__())
+        # print(obs[self.obs_groups["history"][0]].shape)
+        for obs_group in self.obs_groups["history"]:
+            obs_list.append(obs[obs_group][:,self.history_indices])
+        return torch.cat(obs_list, dim=-1)
+
+    def get_zero_actor_obs(self, obs):
+        zero_obs = TensorDict()
+        for obs_group in self.obs_groups["policy"]:
+            zero_obs[obs_group] = torch.zeros_like(obs[obs_group])
+        return zero_obs
+
+    def get_vel_target(self, obs):
+        obs_list = []
+        for obs_group in self.obs_groups["critic"]:
+            obs_list.append(obs[obs_group])
+        critic_obs = torch.cat(obs_list, dim=-1)
+        lin_vel = critic_obs[:,3:6]
+        return lin_vel
+    
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
-
-    def act_inference(self, observations,obs_history):
-        code,_,decode,_,_,_,_ = self.cenet_forward(obs_history)
-        observations = torch.cat((code,observations),dim=-1)
-        actions_mean = self.actor(observations)
-        return actions_mean
-
-    def evaluate(self, critic_observations, **kwargs):
-        value = self.critic(critic_observations)
-        return value
-
+    
+    def update_normalization(self, obs):
+        if self.actor_obs_normalization:
+            actor_obs = self.get_actor_obs(obs)
+            self.actor_obs_normalizer.update(actor_obs)
+        if self.critic_obs_normalization:
+            critic_obs = self.get_critic_obs(obs)
+            self.critic_obs_normalizer.update(critic_obs)
 
     def load_state_dict(self, state_dict, strict=True):
         """Load the parameters of the actor-critic model.
