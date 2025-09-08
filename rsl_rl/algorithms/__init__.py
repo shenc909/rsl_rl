@@ -7,5 +7,7 @@
 
 from .distillation import Distillation
 from .ppo import PPO
+from .ppo_amp import PPOAMP
+from .ppo_dreamwaq import PPODreamWAQ
 
-__all__ = ["PPO", "Distillation"]
+__all__ = ["PPO", "Distillation", "PPOAMP", "PPODreamWAQ"]

@@ -11,10 +11,12 @@ from .rnd import *
 from .student_teacher import StudentTeacher
 from .student_teacher_recurrent import StudentTeacherRecurrent
 from .symmetry import *
+from .actor_critic_dwaq import ActorCriticDWAQ
 
 __all__ = [
     "ActorCritic",
     "ActorCriticRecurrent",
     "StudentTeacher",
     "StudentTeacherRecurrent",
+    "ActorCriticDWAQ",
 ]
