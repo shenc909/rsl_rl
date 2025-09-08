@@ -12,7 +12,7 @@ import torch
 from collections import deque
 
 import rsl_rl
-from rsl_rl.algorithms import PPO, Distillation
+from rsl_rl.algorithms import PPO, Distillation, PPODreamWAQ
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import (
     ActorCritic,
@@ -20,6 +20,7 @@ from rsl_rl.modules import (
     EmpiricalNormalization,
     StudentTeacher,
     StudentTeacherRecurrent,
+    ActorCriticDWAQ,
 )
 from rsl_rl.utils import store_code_state
 
@@ -37,33 +38,48 @@ class OnPolicyRunner:
         # check if multi-gpu is enabled
         self._configure_multi_gpu()
 
+        self.obs_history_required = False
+        self.training_subtype = ""
         # resolve training type depending on the algorithm
         if self.alg_cfg["class_name"] == "PPO":
             self.training_type = "rl"
         elif self.alg_cfg["class_name"] == "Distillation":
             self.training_type = "distillation"
+        elif self.alg_cfg["class_name"] == "PPODreamWAQ":
+            self.training_type = "rl"
+            self.training_subtype = "dreamwaq"
+            self.obs_history_required = True
         else:
             raise ValueError(f"Training type not found for algorithm {self.alg_cfg['class_name']}.")
 
         # resolve dimensions of observations
-        obs, extras = self.env.get_observations()
+        env_obs = self.env.get_observations()
+        obs = env_obs["policy"]
         num_obs = obs.shape[1]
 
         # resolve type of privileged observations
         if self.training_type == "rl":
-            if "critic" in extras["observations"]:
+            if "critic" in env_obs:
                 self.privileged_obs_type = "critic"  # actor-critic reinforcement learnig, e.g., PPO
             else:
                 self.privileged_obs_type = None
+            if "obs_history" in env_obs:
+                self.obs_history_provided = True
+            else:
+                self.obs_history_provided = False
         if self.training_type == "distillation":
-            if "teacher" in extras["observations"]:
+            if "teacher" in env_obs:
                 self.privileged_obs_type = "teacher"  # policy distillation
             else:
                 self.privileged_obs_type = None
 
+        # check if history is required
+        if self.obs_history_required and not self.obs_history_provided:
+            raise ValueError("Observation history is required by the algorithm but not provided by the environment.")
+        
         # resolve dimensions of privileged observations
         if self.privileged_obs_type is not None:
-            num_privileged_obs = extras["observations"][self.privileged_obs_type].shape[1]
+            num_privileged_obs = env_obs[self.privileged_obs_type].shape[1]
         else:
             num_privileged_obs = num_obs
 
@@ -93,6 +109,7 @@ class OnPolicyRunner:
 
         # initialize algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
+
         self.alg: PPO | Distillation = alg_class(
             policy, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg
         )
@@ -168,6 +185,8 @@ class OnPolicyRunner:
         # start learning
         obs, extras = self.env.get_observations()
         privileged_obs = extras["observations"].get(self.privileged_obs_type, obs)
+        if self.obs_history_required:
+            obs_history = extras["observations"].get("obs_history", obs).to(self.device)
         obs, privileged_obs = obs.to(self.device), privileged_obs.to(self.device)
         self.train_mode()  # switch to train mode (for dropout for example)
 
@@ -201,7 +220,10 @@ class OnPolicyRunner:
             with torch.inference_mode():
                 for _ in range(self.num_steps_per_env):
                     # Sample actions
-                    actions = self.alg.act(obs, privileged_obs)
+                    if self.training_subtype == "dreamwaq":
+                        actions = self.alg.act(obs, privileged_obs, **obs_history)
+                    else:
+                        actions = self.alg.act(obs, privileged_obs)
                     # Step the environment
                     obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
                     # Move to device
