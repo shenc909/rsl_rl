@@ -3,9 +3,11 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Definitions for neural networks."""
+"""Definitions for components of modules."""
 
 from .memory import Memory
+from .mlp import MLP
+from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 from .discriminator import Discriminator
 
 __all__ = ["Memory", "Discriminator"]

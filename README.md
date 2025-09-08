@@ -7,6 +7,7 @@ Environment repositories using the framework:
 
 * **`Isaac Lab`** (built on top of NVIDIA Isaac Sim): https://github.com/isaac-sim/IsaacLab
 * **`Legged-Gym`** (built on top of NVIDIA Isaac Gym): https://leggedrobotics.github.io/legged_gym/
+* **`MuJoCo Playground`** (built on top of MuJoCo MJX and Warp): https://github.com/google-deepmind/mujoco_playground/
 
 The main branch supports **PPO** and **Student-Teacher Distillation** with additional features from our research. These include:
 
@@ -46,7 +47,7 @@ The package supports the following logging frameworks which can be configured th
 * Weights & Biases: https://wandb.ai/site
 * Neptune: https://docs.neptune.ai/
 
-For a demo configuration of PPO, please check the [dummy_config.yaml](config/dummy_config.yaml) file.
+For a demo configuration of PPO, please check the [example_config.yaml](config/example_config.yaml) file.
 
 
 ## Contribution Guidelines
