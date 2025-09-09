@@ -106,7 +106,6 @@ class PPOAMP:
         
         # AMP components
         self.discriminator: Discriminator = discriminator.to(self.device)
-        self.amp_transition = RolloutStorage.Transition()
         # Determine observation dimension used in the replay buffer.
         # The discriminator expects concatenated observations, so the replay buffer uses half the dimension.
         obs_dim: int = self.discriminator.input_dim // 2
@@ -118,7 +117,6 @@ class PPOAMP:
         
         
         # Create optimizer
-        
         params = [
             {'params': self.policy.parameters()},
             {'params': self.discriminator.trunk.parameters(),
@@ -147,53 +145,39 @@ class PPOAMP:
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
     def init_storage(
-        self, training_type, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, actions_shape
+        self, training_type, num_envs, num_transitions_per_env, obs, actions_shape
     ):
-        # create memory for RND as well :)
-        if self.rnd:
-            rnd_state_shape = [self.rnd.num_states]
-        else:
-            rnd_state_shape = None
         # create rollout storage
         self.storage = RolloutStorage(
             training_type,
             num_envs,
             num_transitions_per_env,
-            actor_obs_shape,
-            critic_obs_shape,
+            obs,
             actions_shape,
-            rnd_state_shape,
-            self.device,
+            device="cpu",
         )
     
     
 
-    def act(self, obs, critic_obs):
+    def act(self, obs):
         if self.policy.is_recurrent:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # compute the actions and values
         self.transition.actions = self.policy.act(obs).detach()
-        self.transition.values = self.policy.evaluate(critic_obs).detach()
+        self.transition.values = self.policy.evaluate(obs).detach()
         self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.policy.action_mean.detach()
         self.transition.action_sigma = self.policy.action_std.detach()
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
-        self.transition.privileged_observations = critic_obs
         return self.transition.actions
-    
-    def act_amp(self, amp_obs: torch.Tensor) -> None:
-        """
-        Records the AMP observation (from the policy) into the AMP transition storage.
 
-        Parameters
-        ----------
-        amp_obs : torch.Tensor
-            The AMP observation from the policy.
-        """
-        self.amp_transition.observations = amp_obs
-
-    def process_env_step(self, rewards, dones, infos):
+    def process_env_step(self, obs, next_amp_obs, rewards, dones, extras):
+        # update the normalizers
+        self.policy.update_normalization(obs)
+        if self.rnd:
+            self.rnd.update_normalization(obs)
+        
         # Record the rewards and dones
         # Note: we clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
@@ -201,43 +185,26 @@ class PPOAMP:
 
         # Compute the intrinsic rewards and add to extrinsic rewards
         if self.rnd:
-            # Obtain curiosity gates / observations from infos
-            rnd_state = infos["observations"]["rnd_state"]
             # Compute the intrinsic rewards
-            # note: rnd_state is the gated_state after normalization if normalization is used
-            self.intrinsic_rewards, rnd_state = self.rnd.get_intrinsic_reward(rnd_state)
+            self.intrinsic_rewards, rnd_state = self.rnd.get_intrinsic_reward(obs)
             # Add intrinsic rewards to extrinsic rewards
             self.transition.rewards += self.intrinsic_rewards
-            # Record the curiosity gates
-            self.transition.rnd_state = rnd_state.clone()
 
         # Bootstrapping on time outs
-        if "time_outs" in infos:
+        if "time_outs" in extras:
             self.transition.rewards += self.gamma * torch.squeeze(
-                self.transition.values * infos["time_outs"].unsqueeze(1).to(self.device), 1
+                self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device), 1
             )
 
         # record the transition
         self.storage.add_transitions(self.transition)
+        self.amp_storage.insert(self.transition.observations["amp"], next_amp_obs)
         self.transition.clear()
         self.policy.reset(dones)
-    
-    def process_amp_step(self, amp_obs: torch.Tensor) -> None:
-        """
-        Processes an AMP step by inserting the current AMP observation and the new observation (from expert data)
-        into the AMP replay buffer. Clears the temporary AMP transition afterwards.
 
-        Parameters
-        ----------
-        amp_obs : torch.Tensor
-            The new AMP observation (from expert data or policy update).
-        """
-        self.amp_storage.insert(self.amp_transition.observations, amp_obs)
-        self.amp_transition.clear()
-
-    def compute_returns(self, last_critic_obs):
+    def compute_returns(self, obs):
         # compute value for the last step
-        last_values = self.policy.evaluate(last_critic_obs).detach()
+        last_values = self.policy.evaluate(obs).detach()
         self.storage.compute_returns(
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
@@ -311,7 +278,6 @@ class PPOAMP:
             # Unpack the mini-batch sample from the environment.
             (
                 obs_batch,
-                critic_obs_batch,
                 actions_batch,
                 target_values_batch,
                 advantages_batch,
@@ -321,14 +287,13 @@ class PPOAMP:
                 old_sigma_batch,
                 hid_states_batch,
                 masks_batch,
-                rnd_state_batch,
             ) = sample
 
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
             num_aug = 1
             # original batch size
-            original_batch_size = obs_batch.shape[0]
+            original_batch_size = obs_batch.batch_size[0]
 
             # check if we should normalize advantages per mini batch
             if self.normalize_advantage_per_mini_batch:
@@ -347,7 +312,7 @@ class PPOAMP:
                     obs=critic_obs_batch, actions=None, env=self.symmetry["_env"], obs_type="critic"
                 )
                 # compute number of augmentations per sample
-                num_aug = int(obs_batch.shape[0] / original_batch_size)
+                num_aug = int(obs_batch.batch_size[0] / original_batch_size)
                 # repeat the rest of the batch
                 # -- actor
                 old_actions_log_prob_batch = old_actions_log_prob_batch.repeat(num_aug, 1)
@@ -362,7 +327,7 @@ class PPOAMP:
             self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
             # -- critic
-            value_batch = self.policy.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
+            value_batch = self.policy.evaluate(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
             # -- entropy
             # we only keep the entropy of the first augmentation (the original one)
             mu_batch = self.policy.action_mean[:original_batch_size]
@@ -438,21 +403,6 @@ class PPOAMP:
                     policy_next_state = self.amp_normalizer.normalize(policy_next_state)
                     expert_state = self.amp_normalizer.normalize(expert_state)
                     expert_next_state = self.amp_normalizer.normalize(expert_next_state)
-
-            # Concatenate policy and expert AMP observations for the discriminator input.
-            # B_pol = policy_state.size(0)
-            # discriminator_input = torch.cat(
-            #     (
-            #         torch.cat([policy_state, policy_next_state], dim=-1),
-            #         torch.cat([expert_state, expert_next_state], dim=-1),
-            #     ),
-            #     dim=0,
-            # )
-            # discriminator_output = self.discriminator(discriminator_input)
-            # policy_d, expert_d = (
-            #     discriminator_output[:B_pol],
-            #     discriminator_output[B_pol:],
-            # )
             
             policy_d = self.discriminator(torch.cat([policy_state, policy_next_state], dim=-1))
             expert_d = self.discriminator(torch.cat([expert_state, expert_next_state], dim=-1))
@@ -477,7 +427,7 @@ class PPOAMP:
                 if not self.symmetry["use_data_augmentation"]:
                     data_augmentation_func = self.symmetry["data_augmentation_func"]
                     obs_batch, _ = data_augmentation_func(
-                        obs=obs_batch, actions=None, env=self.symmetry["_env"], obs_type="policy"
+                        obs=obs_batch, actions=None, env=self.symmetry["_env"]
                     )
                     # compute number of augmentations per sample
                     num_aug = int(obs_batch.shape[0] / original_batch_size)
@@ -491,7 +441,7 @@ class PPOAMP:
                 #   However, the symmetry loss is computed using the mean of the distribution.
                 action_mean_orig = mean_actions_batch[:original_batch_size]
                 _, actions_mean_symm_batch = data_augmentation_func(
-                    obs=None, actions=action_mean_orig, env=self.symmetry["_env"], obs_type="policy"
+                    obs=None, actions=action_mean_orig, env=self.symmetry["_env"]
                 )
 
                 # compute the loss (we skip the first augmentation as it is the original one)
@@ -506,7 +456,13 @@ class PPOAMP:
                     symmetry_loss = symmetry_loss.detach()
 
             # Random Network Distillation loss
+            # TODO: Move this processing to inside RND module.
             if self.rnd:
+                # extract the rnd_state
+                # TODO: Check if we still need torch no grad. It is just an affine transformation.
+                with torch.no_grad():
+                    rnd_state_batch = self.rnd.get_rnd_state(obs_batch[:original_batch_size])
+                    rnd_state_batch = self.rnd.state_normalizer(rnd_state_batch)
                 # predict the embedding and the target
                 predicted_embedding = self.rnd.predictor(rnd_state_batch)
                 target_embedding = self.rnd.target(rnd_state_batch).detach()
