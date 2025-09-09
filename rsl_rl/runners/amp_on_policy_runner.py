@@ -531,7 +531,7 @@ class AMPOnPolicyRunner:
             self.env.num_envs,
             self.num_steps_per_env,
             obs,
-            [self.env.num_actions],
+            [self.env.num_actions]
         )
 
         return alg

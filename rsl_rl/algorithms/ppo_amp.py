@@ -154,7 +154,7 @@ class PPOAMP:
             num_transitions_per_env,
             obs,
             actions_shape,
-            device="cpu",
+            device=self.device,
         )
     
     
