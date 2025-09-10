@@ -91,7 +91,7 @@ class ActorCriticDWAQ(nn.Module):
         self.encode_mean_vel = nn.Linear(64,3)
         self.encode_logvar_vel = nn.Linear(64,3)
 
-        self.decoder = MLP(cenet_out_dim,45,[128,64],activation)
+        self.decoder = MLP(cenet_out_dim,46,[128,64],activation)
         # self.decoder = nn.Sequential(
         #     nn.Linear(cenet_out_dim,64),
         #     self.activation,
@@ -224,7 +224,7 @@ class ActorCriticDWAQ(nn.Module):
         for obs_group in self.obs_groups["critic"]:
             obs_list.append(obs[obs_group])
         critic_obs = torch.cat(obs_list, dim=-1)
-        lin_vel = critic_obs[:,3:6]
+        lin_vel = critic_obs[:,4:7]
         return lin_vel
     
     def get_actions_log_prob(self, actions):
