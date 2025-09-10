@@ -16,6 +16,9 @@ class ActorCriticDWAQ(nn.Module):
         num_actions,
         cenet_in_dim, 
         cenet_out_dim,
+        cenet_encoder_hidden_dims=[128],
+        cenet_decoder_hidden_dims=[128,64],
+        cenet_decoder_out_dim=46,
         actor_obs_normalization=False,
         critic_obs_normalization=False, 
         actor_hidden_dims=[256, 256, 256],
@@ -84,14 +87,14 @@ class ActorCriticDWAQ(nn.Module):
         #     nn.Linear(128,64),
         #     self.activation,
         # )
-        self.encoder = MLP(cenet_in_dim,64,[128],activation)
+        self.encoder = MLP(cenet_in_dim,64,cenet_encoder_hidden_dims,activation)
         
         self.encode_mean_latent = nn.Linear(64,cenet_out_dim-3)
         self.encode_logvar_latent = nn.Linear(64,cenet_out_dim-3)
         self.encode_mean_vel = nn.Linear(64,3)
         self.encode_logvar_vel = nn.Linear(64,3)
 
-        self.decoder = MLP(cenet_out_dim,46,[128,64],activation)
+        self.decoder = MLP(cenet_out_dim,cenet_decoder_out_dim,cenet_decoder_hidden_dims,activation)
         # self.decoder = nn.Sequential(
         #     nn.Linear(cenet_out_dim,64),
         #     self.activation,
