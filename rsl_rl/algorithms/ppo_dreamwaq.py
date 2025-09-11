@@ -309,7 +309,7 @@ class PPODreamWAQ:
                         param_group["lr"] = self.learning_rate
 
             #Beta VAE loss
-            code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent = self.policy.cenet_forward(obs_batch)
+            code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent = self.policy.cenet_forward(self.policy.get_history_obs(obs_batch))
 
             # NOTE: Update prev critic obs batch indices to get the correct elements for linear body velocity
             vel_target = self.policy.get_vel_target(prev_obs_batch)

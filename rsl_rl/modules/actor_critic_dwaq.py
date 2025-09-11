@@ -87,7 +87,7 @@ class ActorCriticDWAQ(nn.Module):
         #     nn.Linear(128,64),
         #     self.activation,
         # )
-        self.encoder = MLP(cenet_in_dim,64,cenet_encoder_hidden_dims,activation)
+        self.encoder = MLP(cenet_in_dim,64,cenet_encoder_hidden_dims,activation,activation)
         
         self.encode_mean_latent = nn.Linear(64,cenet_out_dim-3)
         self.encode_logvar_latent = nn.Linear(64,cenet_out_dim-3)
@@ -129,8 +129,7 @@ class ActorCriticDWAQ(nn.Module):
         code = mean + var*code_temp
         return code
     
-    def cenet_forward(self,obs):
-        history_obs  = self.get_history_obs(obs)
+    def cenet_forward(self,history_obs):
         distribution = self.encoder(history_obs)
         mean_latent = self.encode_mean_latent(distribution)
         logvar_latent = self.encode_logvar_latent(distribution)
@@ -178,7 +177,8 @@ class ActorCriticDWAQ(nn.Module):
     def act(self, obs, **kwargs):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
-        code,_,decode,_,_,_,_ = self.cenet_forward(obs)
+        history_obs = self.get_history_obs(obs)
+        code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
         observations = torch.cat((code,actor_obs),dim=-1)
         self.update_distribution(observations)
         return self.distribution.sample()
@@ -186,7 +186,8 @@ class ActorCriticDWAQ(nn.Module):
     def act_inference(self, obs, **kwargs):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
-        code,_,decode,_,_,_,_ = self.cenet_forward(obs)
+        history_obs = self.get_history_obs(obs)
+        code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
         observations = torch.cat((code,actor_obs),dim=-1)
         return self.actor(observations)
 
