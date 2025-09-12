@@ -178,8 +178,17 @@ class ActorCriticDWAQ(nn.Module):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
         history_obs = self.get_history_obs(obs)
+        if torch.isnan(history_obs).any():
+            print("history obs has nan")
+            print(history_obs)
         code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
+        if torch.isnan(code).any():
+            print("code has nan")
+            print(code)
         observations = torch.cat((code,actor_obs),dim=-1)
+        if torch.isnan(observations).any():
+            print("observations has nan")
+            print(observations)
         self.update_distribution(observations)
         return self.distribution.sample()
 
