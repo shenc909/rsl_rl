@@ -180,6 +180,9 @@ class ActorCriticDWAQ(nn.Module):
         if torch.isnan(actor_obs).any():
             print("actor obs has nan")
             print(actor_obs)
+            print("actor obs nan index")
+            print(torch.isnan(actor_obs).nonzero(as_tuple=True))
+            print(torch.isnan(actor_obs).nonzero(as_tuple=False))
         history_obs = self.get_history_obs(obs)
         if torch.isnan(history_obs).any():
             print("history obs has nan")
