@@ -149,7 +149,9 @@ class PPODreamWAQ:
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
         if self.prev_obs is None:
-            self.transition.previous_observations = self.policy.get_zero_actor_obs(obs).detach()
+            obs_zero = obs.clone().zero_()
+            # self.transition.previous_observations = self.policy.get_zero_actor_obs(obs).detach()
+            self.transition.previous_observations = obs_zero.detach()
         else:
             self.transition.previous_observations = self.prev_obs.detach()
         self.prev_obs = obs
