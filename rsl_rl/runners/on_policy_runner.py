@@ -113,8 +113,8 @@ class OnPolicyRunner:
                     
                     actions = self.alg.act(obs)
                     
-                    if torch.is_nan(actions).any():
-                        print(torch.is_nan(actions).nonzero(as_tuple=False))
+                    if torch.isnan(actions).any():
+                        print(torch.isnan(actions).nonzero(as_tuple=False))
                         raise ValueError("NaN detected in actions")
                     if torch.isinf(actions).any():
                         print(torch.isinf(actions).nonzero(as_tuple=False))
