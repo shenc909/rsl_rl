@@ -177,6 +177,9 @@ class ActorCriticDWAQ(nn.Module):
     def act(self, obs, **kwargs):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
+        if torch.isnan(actor_obs).any():
+            print("actor obs has nan")
+            print(actor_obs)
         history_obs = self.get_history_obs(obs)
         if torch.isnan(history_obs).any():
             print("history obs has nan")
