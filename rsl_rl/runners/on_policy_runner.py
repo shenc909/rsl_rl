@@ -112,6 +112,13 @@ class OnPolicyRunner:
                     # Sample actions
                     
                     actions = self.alg.act(obs)
+                    
+                    if torch.is_nan(actions).any():
+                        print(torch.is_nan(actions).nonzero(as_tuple=False))
+                        raise ValueError("NaN detected in actions")
+                    if torch.isinf(actions).any():
+                        print(torch.isinf(actions).nonzero(as_tuple=False))
+                        raise ValueError("Inf detected in actions")
 
                     # Step the environment
                     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
