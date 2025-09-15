@@ -106,6 +106,7 @@ class PPOAMP:
         
         # AMP components
         self.discriminator: Discriminator = discriminator.to(self.device)
+        self.amp_transition = RolloutStorage.Transition()
         # Determine observation dimension used in the replay buffer.
         # The discriminator expects concatenated observations, so the replay buffer uses half the dimension.
         obs_dim: int = self.discriminator.input_dim // 2
@@ -122,7 +123,8 @@ class PPOAMP:
             {'params': self.discriminator.trunk.parameters(),
              'weight_decay': 10e-4, 'name': 'amp_trunk'},
             {'params': self.discriminator.linear.parameters(),
-             'weight_decay': 10e-2, 'name': 'amp_output'}]
+             'weight_decay': 10e-2, 'name': 'amp_output'}
+            ]
 
         self.optimizer = optim.Adam(params, lr=learning_rate)
         # Create rollout storage
@@ -170,6 +172,7 @@ class PPOAMP:
         self.transition.action_sigma = self.policy.action_std.detach()
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
+        self.amp_transition.observations = obs["amp"]
         return self.transition.actions
 
     def process_env_step(self, obs, next_amp_obs, rewards, dones, extras):
@@ -198,7 +201,8 @@ class PPOAMP:
 
         # record the transition
         self.storage.add_transitions(self.transition)
-        self.amp_storage.insert(self.transition.observations["amp"], next_amp_obs)
+        self.amp_storage.insert(self.amp_transition.observations, next_amp_obs)
+        self.amp_transition.clear()
         self.transition.clear()
         self.policy.reset(dones)
 

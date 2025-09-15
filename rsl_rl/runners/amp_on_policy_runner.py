@@ -159,8 +159,8 @@ class AMPOnPolicyRunner:
                     # Move to device
                     obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                     
-                    next_obs = self.env.get_observations().to(self.device)
-                    next_amp_obs = next_obs["amp"]
+                    # next_obs = self.env.get_observations().to(self.device)
+                    next_amp_obs = obs["amp"]
 
                     # Process the AMP reward
                     style_rewards = self.discriminator.predict_reward(
