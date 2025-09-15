@@ -138,7 +138,7 @@ class ActorCriticDWAQ(nn.Module):
         # code = mean_latent + var*code_temp
         # print("latent : ",code[0])
         mean_vel = self.encode_mean_vel(distribution)
-        logvar_vel = self.encode_mean_vel(distribution)
+        logvar_vel = self.encode_logvar_vel(distribution)
         code_latent = self.reparameterise(mean_latent,logvar_latent)
         code_vel = self.reparameterise(mean_vel,logvar_vel)
         code = torch.cat((code_vel,code_latent),dim=-1)
@@ -167,6 +167,7 @@ class ActorCriticDWAQ(nn.Module):
         # compute standard deviation
         if self.noise_std_type == "scalar":
             std = self.std.expand_as(mean)
+            # std = torch.clamp(std, 0.001, 1.0)
         elif self.noise_std_type == "log":
             std = torch.exp(self.log_std).expand_as(mean)
         else:
@@ -243,7 +244,7 @@ class ActorCriticDWAQ(nn.Module):
         for obs_group in self.obs_groups["critic"]:
             obs_list.append(obs[obs_group])
         critic_obs = torch.cat(obs_list, dim=-1)
-        lin_vel = critic_obs[:,4:7]
+        lin_vel = critic_obs[:,3:6]
         return lin_vel
     
     def get_actions_log_prob(self, actions):

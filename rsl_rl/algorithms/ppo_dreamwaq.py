@@ -8,6 +8,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import tensordict
 from itertools import chain
 
 from rsl_rl.modules import ActorCriticDWAQ
@@ -135,9 +136,14 @@ class PPODreamWAQ:
     def train_mode(self):
         self.policy.train()
 
-    def act(self, obs):
+    def act(self, obs: tensordict.TensorDict):
         # assume obs_history is a history of obs of length n, including the current obs
         # history is implemented as a circular buffer with first element being the oldest, last element being the latest
+        for key in obs.keys():
+            if torch.isnan(obs[key]).any():
+                print(key)
+                print(torch.isnan(obs[key]).nonzero())
+                raise ValueError("Input contains NaN values")
         if self.policy.is_recurrent:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # compute the actions and values
@@ -148,13 +154,13 @@ class PPODreamWAQ:
         self.transition.action_sigma = self.policy.action_std.detach()
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
-        if self.prev_obs is None:
-            obs_zero = obs.clone().zero_()
-            # self.transition.previous_observations = self.policy.get_zero_actor_obs(obs).detach()
-            self.transition.previous_observations = obs_zero.detach()
-        else:
-            self.transition.previous_observations = self.prev_obs.detach()
-        self.prev_obs = obs
+        # if self.prev_obs is None:
+        #     obs_zero = obs.clone().zero_()
+        #     # self.transition.previous_observations = self.policy.get_zero_actor_obs(obs).detach()
+        #     self.transition.previous_observations = obs_zero.detach()
+        # else:
+        #     self.transition.previous_observations = self.prev_obs.detach()
+        # self.prev_obs = obs
         
         return self.transition.actions
 
@@ -314,7 +320,8 @@ class PPODreamWAQ:
             code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent = self.policy.cenet_forward(self.policy.get_history_obs(obs_batch))
 
             # NOTE: Update prev critic obs batch indices to get the correct elements for linear body velocity
-            vel_target = self.policy.get_vel_target(prev_obs_batch)
+            # vel_target = self.policy.get_vel_target(prev_obs_batch)
+            vel_target = self.policy.get_vel_target(obs_batch)
             decode_target = self.policy.get_actor_obs(obs_batch)
             vel_target.requires_grad = False
             decode_target.requires_grad = False

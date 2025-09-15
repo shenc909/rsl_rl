@@ -113,7 +113,7 @@ class RolloutStorageHistory:
 
         # Core
         self.observations[self.step].copy_(transition.observations)
-        self.previous_observations[self.step].copy_(transition.previous_observations)
+        # self.previous_observations[self.step].copy_(transition.previous_observations)
         self.actions[self.step].copy_(transition.actions)
         self.rewards[self.step].copy_(transition.rewards.view(-1, 1))
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
