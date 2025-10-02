@@ -52,6 +52,8 @@ class ActorCriticDWAQ(nn.Module):
         self.obs_hist_dict = obs_hist_dict
         
         # generate history indices since obs history stacks using AAABBBCCC instead of ABCABCABC
+        # assume obs_history is a history of obs of length n, including the current obs
+        # history is implemented as a circular buffer with first element being the oldest, last element being the latest
         self.history_indices = []
         sum = 0
         for key, dim in self.obs_hist_dict.items():

@@ -325,7 +325,10 @@ class PPODreamWAQ:
             decode_target = self.policy.get_actor_obs(obs_batch)
             vel_target.requires_grad = False
             decode_target.requires_grad = False
-            autoenc_loss = (nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target) + beta*(-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp())))/self.num_mini_batches
+            # autoenc_loss = (nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target) + beta*(-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp())))/self.num_mini_batches
+            reconstruction_loss = nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target)
+            kld_loss = (-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp(), dim=1)).mean(dim=0)
+            autoenc_loss = reconstruction_loss + beta * kld_loss
             
             # Surrogate loss
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
