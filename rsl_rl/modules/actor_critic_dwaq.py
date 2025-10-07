@@ -89,7 +89,7 @@ class ActorCriticDWAQ(nn.Module):
         #     nn.Linear(128,64),
         #     self.activation,
         # )
-        self.encoder = MLP(cenet_in_dim,64,cenet_encoder_hidden_dims,activation,activation)
+        self.encoder = MLP(cenet_in_dim,64,cenet_encoder_hidden_dims,activation)
         
         self.encode_mean_latent = nn.Linear(64,cenet_out_dim-3)
         self.encode_logvar_latent = nn.Linear(64,cenet_out_dim-3)
@@ -133,16 +133,30 @@ class ActorCriticDWAQ(nn.Module):
     
     def cenet_forward(self,history_obs):
         distribution = self.encoder(history_obs)
+        if torch.isnan(distribution).any():
+            print("cenet distribution has nan")
         mean_latent = self.encode_mean_latent(distribution)
+        if torch.isnan(mean_latent).any():
+            print("cenet mean_latent has nan")
         logvar_latent = self.encode_logvar_latent(distribution)
+        if torch.isnan(logvar_latent).any():
+            print("cenet logvar has nan")
         # var = torch.exp(logvar_latent*0.5)
         # code_temp = torch.randn_like(var)
         # code = mean_latent + var*code_temp
         # print("latent : ",code[0])
         mean_vel = self.encode_mean_vel(distribution)
+        if torch.isnan(mean_vel).any():
+            print("cenet mean_vel has nan")
         logvar_vel = self.encode_logvar_vel(distribution)
+        if torch.isnan(logvar_vel).any():
+            print("cenet logvar_vel has nan")
         code_latent = self.reparameterise(mean_latent,logvar_latent)
+        if torch.isnan(code_latent).any():
+            print("cenet code_latent has nan")
         code_vel = self.reparameterise(mean_vel,logvar_vel)
+        if torch.isnan(code_vel).any():
+            print("cenet code_vel has nan")
         code = torch.cat((code_vel,code_latent),dim=-1)
         decode = self.decoder(code)
         return code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent

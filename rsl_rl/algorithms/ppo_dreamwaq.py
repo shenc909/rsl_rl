@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import torch
+torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 import torch.optim as optim
 import tensordict
@@ -332,6 +333,9 @@ class PPODreamWAQ:
             
             # Surrogate loss
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
+            # print(f"ratio {torch.max(ratio)}")
+            # print(f"advantages {torch.max(advantages_batch)}")
+
             surrogate = -torch.squeeze(advantages_batch) * ratio
             surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
                 ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
