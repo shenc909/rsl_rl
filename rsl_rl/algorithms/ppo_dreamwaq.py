@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import torch
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 import torch.optim as optim
 import tensordict
@@ -141,9 +141,10 @@ class PPODreamWAQ:
         # assume obs_history is a history of obs of length n, including the current obs
         # history is implemented as a circular buffer with first element being the oldest, last element being the latest
         for key in obs.keys():
-            if torch.isnan(obs[key]).any():
+            if torch.isnan(obs[key]).any() or torch.isinf(obs[key]).any():
                 print(key)
                 print(torch.isnan(obs[key]).nonzero())
+                print(torch.isinf(obs[key]).nonzero())
                 raise ValueError("Input contains NaN values")
         if self.policy.is_recurrent:
             self.transition.hidden_states = self.policy.get_hidden_states()
@@ -335,6 +336,22 @@ class PPODreamWAQ:
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
             # print(f"ratio {torch.max(ratio)}")
             # print(f"advantages {torch.max(advantages_batch)}")
+            if torch.isnan(ratio).any() or torch.isinf(ratio).any():
+                print(f"{torch.isnan(ratio).any()} {torch.isinf(ratio).any()}")
+                print(ratio)
+                print("ratio has nan or inf")
+            if torch.isnan(advantages_batch).any() or torch.isinf(advantages_batch).any():
+                print(f"{torch.isnan(advantages_batch).any()} {torch.isinf(advantages_batch).any()}")
+                print(advantages_batch)
+                print("advantages has nan or inf")
+            if torch.isnan(value_batch).any() or torch.isinf(value_batch).any():
+                print(f"{torch.isnan(value_batch).any()} {torch.isinf(value_batch).any()}")
+                print(value_batch)
+                print("value_batch has nan or inf")
+            if torch.isnan(returns_batch).any() or torch.isinf(returns_batch).any():
+                print(f"{torch.isnan(returns_batch).any()} {torch.isinf(returns_batch).any()}")
+                print(returns_batch)
+                print("returns_batch has nan or inf")
 
             surrogate = -torch.squeeze(advantages_batch) * ratio
             surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(

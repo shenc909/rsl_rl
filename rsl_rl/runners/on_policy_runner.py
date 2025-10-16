@@ -51,6 +51,8 @@ class OnPolicyRunner:
         if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
             default_sets.append("rnd_state")
         self.cfg["obs_groups"] = resolve_obs_groups(obs, self.cfg["obs_groups"], default_sets)
+        
+        self.disable_logs = self.is_distributed and self.gpu_global_rank != 0
 
         # create the algorithm
         self.alg = self._construct_algorithm(obs)
@@ -442,7 +444,7 @@ class OnPolicyRunner:
         actor_critic: ActorCritic | ActorCriticRecurrent | ActorCriticDWAQ = actor_critic_class(
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
-
+        
         # initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
         alg: PPO | PPODreamWAQ = alg_class(actor_critic, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
@@ -475,6 +477,8 @@ class OnPolicyRunner:
 
                 self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
                 self.writer.log_config(self.env.cfg, self.cfg, self.alg_cfg, self.policy_cfg)
+                import wandb
+                wandb.watch(self.alg.policy, log="all", log_freq=100)
             elif self.logger_type == "tensorboard":
                 from torch.utils.tensorboard import SummaryWriter
 
