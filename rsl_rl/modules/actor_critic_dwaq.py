@@ -60,6 +60,12 @@ class ActorCriticDWAQ(nn.Module):
             for h in range(self.history_length - 1):
                 self.history_indices += list(range(sum + h * dim, sum + (h + 1) * dim))
             sum += dim * self.history_length
+        
+        self.current_indices = []
+        sum = 0
+        for key, dim in self.obs_hist_dict.items():
+            self.current_indices += list(range(sum + (self.history_length - 1) * dim, sum + self.history_length * dim))
+            sum += dim * self.history_length
         # print(self.history_indices)
 
         # actor
@@ -231,8 +237,10 @@ class ActorCriticDWAQ(nn.Module):
     
     def get_actor_obs(self, obs):
         obs_list = []
-        for obs_group in self.obs_groups["policy"]:
-            obs_list.append(obs[obs_group])
+        # for obs_group in self.obs_groups["policy"]:
+        #     obs_list.append(obs[obs_group])
+        for obs_group in self.obs_groups["history"]:
+            obs_list.append(obs[obs_group][:,self.current_indices])
         return torch.cat(obs_list, dim=-1)
 
     def get_critic_obs(self, obs):
