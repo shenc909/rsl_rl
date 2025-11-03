@@ -28,6 +28,7 @@ class ActorCriticDWAQ(nn.Module):
         noise_std_type: str = "scalar",
         history_length=3,
         obs_hist_dict=dict(),
+        use_height_scan=False,
         **kwargs,
     ):
         if kwargs:
@@ -48,6 +49,7 @@ class ActorCriticDWAQ(nn.Module):
             assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
             num_critic_obs += obs[obs_group].shape[-1]
         
+        self.use_height_scan = use_height_scan
         self.history_length = history_length
         self.obs_hist_dict = obs_hist_dict
         
@@ -58,13 +60,15 @@ class ActorCriticDWAQ(nn.Module):
         sum = 0
         for key, dim in self.obs_hist_dict.items():
             for h in range(self.history_length - 1):
-                self.history_indices += list(range(sum + h * dim, sum + (h + 1) * dim))
+                if key != "height_scan":
+                    self.history_indices += list(range(sum + h * dim, sum + (h + 1) * dim))
             sum += dim * self.history_length
         
         self.current_indices = []
         sum = 0
         for key, dim in self.obs_hist_dict.items():
-            self.current_indices += list(range(sum + (self.history_length - 1) * dim, sum + self.history_length * dim))
+            if key != "height_scan":
+                self.current_indices += list(range(sum + (self.history_length - 1) * dim, sum + self.history_length * dim))
             sum += dim * self.history_length
         # print(self.history_indices)
 
@@ -214,7 +218,11 @@ class ActorCriticDWAQ(nn.Module):
         if torch.isnan(code).any():
             print("code has nan")
             print(code)
-        observations = torch.cat((code,actor_obs),dim=-1)
+        if self.use_height_scan:
+            height_scan_obs = self.get_curr_height_scan_obs(obs)
+            observations = torch.cat((code,actor_obs,height_scan_obs),dim=-1)
+        else:
+            observations = torch.cat((code,actor_obs),dim=-1)
         if torch.isnan(observations).any():
             print("observations has nan")
             print(observations)
@@ -226,7 +234,11 @@ class ActorCriticDWAQ(nn.Module):
         actor_obs = self.actor_obs_normalizer(actor_obs)
         history_obs = self.get_history_obs(obs)
         code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
-        observations = torch.cat((code,actor_obs),dim=-1)
+        if self.use_height_scan:
+            height_scan_obs = self.get_curr_height_scan_obs(obs)
+            observations = torch.cat((code,actor_obs,height_scan_obs),dim=-1)
+        else:
+            observations = torch.cat((code,actor_obs),dim=-1)
         return self.actor(observations)
 
     def evaluate(self, obs, **kwargs):
@@ -255,6 +267,12 @@ class ActorCriticDWAQ(nn.Module):
         # print(obs[self.obs_groups["history"][0]].shape)
         for obs_group in self.obs_groups["history"]:
             obs_list.append(obs[obs_group][:,self.history_indices])
+        return torch.cat(obs_list, dim=-1)
+    
+    def get_curr_height_scan_obs(self, obs):
+        obs_list = []
+        for obs_group in self.obs_groups["history"]:
+            obs_list.append(obs[obs_group][:,-self.obs_hist_dict["height_scan"]:])
         return torch.cat(obs_list, dim=-1)
 
     def get_zero_actor_obs(self, obs):
