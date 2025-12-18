@@ -16,6 +16,7 @@ from rsl_rl.modules import ActorCriticDWAQ
 from rsl_rl.modules.rnd import RandomNetworkDistillation
 from rsl_rl.storage import RolloutStorageHistory as RolloutStorage
 from rsl_rl.utils import string_to_callable
+from rsl_rl.utils.safety_utils import check_safe
 
 
 class PPODreamWAQ:
@@ -207,6 +208,8 @@ class PPODreamWAQ:
         mean_surrogate_loss = 0
         mean_entropy = 0
         mean_autoenc_loss = 0
+        mean_cenet_reconstruction_loss = 0
+        mean_cenet_kld_loss = 0
         # -- RND loss
         if self.rnd:
             mean_rnd_loss = 0
@@ -238,6 +241,21 @@ class PPODreamWAQ:
             hid_states_batch,
             masks_batch,
         ) in generator:
+            
+            if not check_safe(actions_batch):
+                raise ValueError("actions_batch contains NaN or Inf values")
+            if not check_safe(target_values_batch):
+                raise ValueError("target_values_batch contains NaN or Inf values")
+            if not check_safe(advantages_batch):
+                raise ValueError("advantages_batch contains NaN or Inf values")
+            if not check_safe(returns_batch):
+                raise ValueError("returns_batch contains NaN or Inf values")
+            if not check_safe(old_actions_log_prob_batch):
+                raise ValueError("old_actions_log_prob_batch contains NaN or Inf values")
+            if not check_safe(old_mu_batch):
+                raise ValueError("old_mu_batch contains NaN or Inf values")
+            if not check_safe(old_sigma_batch):
+                raise ValueError("old_sigma_batch contains NaN or Inf values")
 
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
@@ -328,7 +346,9 @@ class PPODreamWAQ:
             vel_target.requires_grad = False
             decode_target.requires_grad = False
             # autoenc_loss = (nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target) + beta*(-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp())))/self.num_mini_batches
-            reconstruction_loss = nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target)
+            
+            # clamping reconstruction loss to 10 to avoid large gradients causing NaN issues
+            reconstruction_loss = torch.clamp_max(nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target), 10.0)
             kld_loss = (-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp(), dim=1)).mean(dim=0)
             autoenc_loss = reconstruction_loss + beta * kld_loss
             
@@ -446,6 +466,8 @@ class PPODreamWAQ:
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_autoenc_loss += autoenc_loss.item()
+            mean_cenet_reconstruction_loss += reconstruction_loss.item()
+            mean_cenet_kld_loss += kld_loss.item()
             mean_entropy += entropy_batch.mean().item()
             # -- RND loss
             if mean_rnd_loss is not None:
@@ -459,6 +481,8 @@ class PPODreamWAQ:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_autoenc_loss /= num_updates
+        mean_cenet_reconstruction_loss /= num_updates
+        mean_cenet_kld_loss /= num_updates
         mean_entropy /= num_updates
         # -- For RND
         if mean_rnd_loss is not None:
@@ -474,7 +498,8 @@ class PPODreamWAQ:
             "value_function": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "cenet": mean_autoenc_loss,
-            "entropy": mean_entropy,
+            "cenet_reconstruction": mean_cenet_reconstruction_loss,
+            "cenet_kld": mean_cenet_kld_loss,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss

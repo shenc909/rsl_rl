@@ -6,6 +6,7 @@ from torch.distributions import Normal
 from tensordict import TensorDict
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
+from rsl_rl.utils.safety_utils import check_safe
 
 class ActorCriticDWAQ(nn.Module):
     is_recurrent = False
@@ -77,7 +78,11 @@ class ActorCriticDWAQ(nn.Module):
         # actor observation normalization
         self.actor_obs_normalization = actor_obs_normalization
         if actor_obs_normalization:
-            self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
+            # self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
+            if use_height_scan:
+                self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs - obs_hist_dict["height_scan"])
+            else:
+                self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
         else:
             self.actor_obs_normalizer = torch.nn.Identity()
         print(f"Actor MLP: {self.actor}")
@@ -91,6 +96,12 @@ class ActorCriticDWAQ(nn.Module):
         else:
             self.critic_obs_normalizer = torch.nn.Identity()
         print(f"Critic MLP: {self.critic}")
+        
+        self.history_obs_normalization = actor_obs_normalization
+        if self.history_obs_normalization:
+            self.history_obs_normalizer = EmpiricalNormalization(cenet_in_dim)
+        else:
+            self.history_obs_normalizer = torch.nn.Identity()
 
         # CENet
         # self.encoder = nn.Sequential(
@@ -136,39 +147,41 @@ class ActorCriticDWAQ(nn.Module):
         raise NotImplementedError
     
     def reparameterise(self,mean,logvar):
-        var = torch.exp(logvar*0.5)
-        code_temp = torch.randn_like(var)
-        code = mean + var*code_temp
+        std = torch.exp(logvar*0.5)
+        code_temp = torch.randn_like(std)
+        code = mean + std*code_temp
         return code
     
     def cenet_forward(self,history_obs):
         distribution = self.encoder(history_obs)
-        if torch.isnan(distribution).any():
-            print("cenet distribution has nan")
+        if not check_safe(distribution):
+            print("cenet distribution has nan or inf")
         mean_latent = self.encode_mean_latent(distribution)
-        if torch.isnan(mean_latent).any():
-            print("cenet mean_latent has nan")
+        if not check_safe(mean_latent):
+            print("cenet mean_latent has nan or inf")
         logvar_latent = self.encode_logvar_latent(distribution)
-        if torch.isnan(logvar_latent).any():
-            print("cenet logvar has nan")
+        if not check_safe(logvar_latent):
+            print("cenet logvar has nan or inf")
         # var = torch.exp(logvar_latent*0.5)
         # code_temp = torch.randn_like(var)
         # code = mean_latent + var*code_temp
         # print("latent : ",code[0])
         mean_vel = self.encode_mean_vel(distribution)
-        if torch.isnan(mean_vel).any():
-            print("cenet mean_vel has nan")
+        if not check_safe(mean_vel):
+            print("cenet mean_vel has nan or inf")
         logvar_vel = self.encode_logvar_vel(distribution)
-        if torch.isnan(logvar_vel).any():
-            print("cenet logvar_vel has nan")
+        if not check_safe(logvar_vel):
+            print("cenet logvar_vel has nan or inf")
         code_latent = self.reparameterise(mean_latent,logvar_latent)
-        if torch.isnan(code_latent).any():
-            print("cenet code_latent has nan")
+        if not check_safe(code_latent):
+            print("cenet code_latent has nan or inf")
         code_vel = self.reparameterise(mean_vel,logvar_vel)
-        if torch.isnan(code_vel).any():
-            print("cenet code_vel has nan")
+        if not check_safe(code_vel):
+            print("cenet code_vel has nan or inf")
         code = torch.cat((code_vel,code_latent),dim=-1)
         decode = self.decoder(code)
+        if not check_safe(decode):
+            print("cenet decode has nan or inf")
         return code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent
 
     @property
@@ -199,32 +212,41 @@ class ActorCriticDWAQ(nn.Module):
         else:
             raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         # create distribution
+        if torch.isnan(mean).any():
+            print("action mean has nan")
+            print(mean)
+        if torch.isnan(std).any():
+            print("action std has nan")
+            print(std)
+        if torch.isinf(mean).any():
+            print("action mean has inf")
+            print(mean)
+        if torch.isinf(std).any():
+            print("action std has inf")
+            print(std)
         self.distribution = Normal(mean, std)
 
     def act(self, obs, **kwargs):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
-        if torch.isnan(actor_obs).any():
-            print("actor obs has nan")
-            print(actor_obs)
-            print("actor obs nan index")
-            print(torch.isnan(actor_obs).nonzero(as_tuple=True))
-            print(torch.isnan(actor_obs).nonzero(as_tuple=False))
+        if not check_safe(actor_obs):
+            print("actor obs has nan or inf")
         history_obs = self.get_history_obs(obs)
-        if torch.isnan(history_obs).any():
-            print("history obs has nan")
-            print(history_obs)
+        history_obs = self.history_obs_normalizer(history_obs)
+        if not check_safe(history_obs):
+            print("history obs has nan or inf")
         code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
-        if torch.isnan(code).any():
-            print("code has nan")
-            print(code)
+        if not check_safe(code):
+            print("code has nan or inf")
         if self.use_height_scan:
             height_scan_obs = self.get_curr_height_scan_obs(obs)
+            if not check_safe(height_scan_obs):
+                print("height scan obs has nan or inf")
             observations = torch.cat((code,actor_obs,height_scan_obs),dim=-1)
         else:
             observations = torch.cat((code,actor_obs),dim=-1)
-        if torch.isnan(observations).any():
-            print("observations has nan")
+        if not check_safe(observations):
+            print("observations has nan or inf")
             print(observations)
         self.update_distribution(observations)
         return self.distribution.sample()
@@ -233,6 +255,7 @@ class ActorCriticDWAQ(nn.Module):
         actor_obs = self.get_actor_obs(obs)
         actor_obs = self.actor_obs_normalizer(actor_obs)
         history_obs = self.get_history_obs(obs)
+        history_obs = self.history_obs_normalizer(history_obs)
         code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
         if self.use_height_scan:
             height_scan_obs = self.get_curr_height_scan_obs(obs)
@@ -296,6 +319,8 @@ class ActorCriticDWAQ(nn.Module):
         if self.actor_obs_normalization:
             actor_obs = self.get_actor_obs(obs)
             self.actor_obs_normalizer.update(actor_obs)
+            history_obs = self.get_history_obs(obs)
+            self.history_obs_normalizer.update(history_obs)
         if self.critic_obs_normalization:
             critic_obs = self.get_critic_obs(obs)
             self.critic_obs_normalizer.update(critic_obs)
