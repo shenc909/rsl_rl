@@ -348,7 +348,9 @@ class PPODreamWAQ:
             # autoenc_loss = (nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target) + beta*(-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp())))/self.num_mini_batches
             
             # clamping reconstruction loss to 10 to avoid large gradients causing NaN issues
-            reconstruction_loss = torch.clamp_max(nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target), 10.0)
+            # reconstruction_loss = torch.clamp_max(nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target), 10.0)
+            reconstruction_loss = nn.MSELoss(reduction="sum")(code_vel, vel_target) + nn.MSELoss(reduction="sum")(decode, decode_target)
+            reconstruction_loss = reconstruction_loss / obs_batch.shape[0]  # normalize by batch size
             kld_loss = (-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp(), dim=1)).mean(dim=0)
             autoenc_loss = reconstruction_loss + beta * kld_loss
             

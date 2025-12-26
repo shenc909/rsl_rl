@@ -147,6 +147,8 @@ class ActorCriticDWAQ(nn.Module):
         raise NotImplementedError
     
     def reparameterise(self,mean,logvar):
+        #clamp logvar to avoid inf or nan, based on VAE implementation by huggingface
+        logvar = torch.clamp(logvar, min=-30.0, max=20.0)
         std = torch.exp(logvar*0.5)
         code_temp = torch.randn_like(std)
         code = mean + std*code_temp
