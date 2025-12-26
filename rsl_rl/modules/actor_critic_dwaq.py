@@ -78,7 +78,6 @@ class ActorCriticDWAQ(nn.Module):
         # actor observation normalization
         self.actor_obs_normalization = actor_obs_normalization
         if actor_obs_normalization:
-            # self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
             if use_height_scan:
                 self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs - obs_hist_dict["height_scan"])
             else:
@@ -230,11 +229,10 @@ class ActorCriticDWAQ(nn.Module):
 
     def act(self, obs, **kwargs):
         actor_obs = self.get_actor_obs(obs)
-        actor_obs = self.actor_obs_normalizer(actor_obs)
+        
         if not check_safe(actor_obs):
             print("actor obs has nan or inf")
         history_obs = self.get_history_obs(obs)
-        history_obs = self.history_obs_normalizer(history_obs)
         if not check_safe(history_obs):
             print("history obs has nan or inf")
         code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
@@ -255,9 +253,7 @@ class ActorCriticDWAQ(nn.Module):
 
     def act_inference(self, obs, **kwargs):
         actor_obs = self.get_actor_obs(obs)
-        actor_obs = self.actor_obs_normalizer(actor_obs)
         history_obs = self.get_history_obs(obs)
-        history_obs = self.history_obs_normalizer(history_obs)
         code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
         if self.use_height_scan:
             height_scan_obs = self.get_curr_height_scan_obs(obs)
@@ -268,7 +264,6 @@ class ActorCriticDWAQ(nn.Module):
 
     def evaluate(self, obs, **kwargs):
         obs = self.get_critic_obs(obs)
-        obs = self.critic_obs_normalizer(obs)
         value = self.critic(obs)
         return value
     
@@ -278,13 +273,13 @@ class ActorCriticDWAQ(nn.Module):
         #     obs_list.append(obs[obs_group])
         for obs_group in self.obs_groups["history"]:
             obs_list.append(obs[obs_group][:,self.current_indices])
-        return torch.cat(obs_list, dim=-1)
+        return self.actor_obs_normalizer(torch.cat(obs_list, dim=-1))
 
     def get_critic_obs(self, obs):
         obs_list = []
         for obs_group in self.obs_groups["critic"]:
             obs_list.append(obs[obs_group])
-        return torch.cat(obs_list, dim=-1)
+        return self.critic_obs_normalizer(torch.cat(obs_list, dim=-1))
     
     def get_history_obs(self, obs):
         obs_list = []
@@ -292,7 +287,7 @@ class ActorCriticDWAQ(nn.Module):
         # print(obs[self.obs_groups["history"][0]].shape)
         for obs_group in self.obs_groups["history"]:
             obs_list.append(obs[obs_group][:,self.history_indices])
-        return torch.cat(obs_list, dim=-1)
+        return self.history_obs_normalizer(torch.cat(obs_list, dim=-1))
     
     def get_curr_height_scan_obs(self, obs):
         obs_list = []
@@ -307,10 +302,8 @@ class ActorCriticDWAQ(nn.Module):
         return zero_obs
 
     def get_vel_target(self, obs):
-        obs_list = []
-        for obs_group in self.obs_groups["critic"]:
-            obs_list.append(obs[obs_group])
-        critic_obs = torch.cat(obs_list, dim=-1)
+        critic_obs = self.get_critic_obs(obs)
+        critic_obs = self.critic_obs_normalizer(critic_obs)
         lin_vel = critic_obs[:,3:6]
         return lin_vel
     
