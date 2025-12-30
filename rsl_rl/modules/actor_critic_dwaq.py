@@ -267,27 +267,36 @@ class ActorCriticDWAQ(nn.Module):
         value = self.critic(obs)
         return value
     
-    def get_actor_obs(self, obs):
+    def get_actor_obs(self, obs, normalize=True):
         obs_list = []
         # for obs_group in self.obs_groups["policy"]:
         #     obs_list.append(obs[obs_group])
         for obs_group in self.obs_groups["history"]:
             obs_list.append(obs[obs_group][:,self.current_indices])
-        return self.actor_obs_normalizer(torch.cat(obs_list, dim=-1))
+        if not normalize:
+            return torch.cat(obs_list, dim=-1)
+        else:
+            return self.actor_obs_normalizer(torch.cat(obs_list, dim=-1))
 
-    def get_critic_obs(self, obs):
+    def get_critic_obs(self, obs, normalize=True):
         obs_list = []
         for obs_group in self.obs_groups["critic"]:
             obs_list.append(obs[obs_group])
-        return self.critic_obs_normalizer(torch.cat(obs_list, dim=-1))
+        if not normalize:
+            return torch.cat(obs_list, dim=-1)
+        else:
+            return self.critic_obs_normalizer(torch.cat(obs_list, dim=-1))
     
-    def get_history_obs(self, obs):
+    def get_history_obs(self, obs, normalize=True):
         obs_list = []
         # print(self.history_indices.__len__())
         # print(obs[self.obs_groups["history"][0]].shape)
         for obs_group in self.obs_groups["history"]:
             obs_list.append(obs[obs_group][:,self.history_indices])
-        return self.history_obs_normalizer(torch.cat(obs_list, dim=-1))
+        if not normalize:
+            return torch.cat(obs_list, dim=-1)
+        else:
+            return self.history_obs_normalizer(torch.cat(obs_list, dim=-1))
     
     def get_curr_height_scan_obs(self, obs):
         obs_list = []
