@@ -209,6 +209,7 @@ class PPODreamWAQ:
         mean_entropy = 0
         mean_autoenc_loss = 0
         mean_cenet_reconstruction_loss = 0
+        mean_cenet_lin_vel_reconstruction_loss = 0
         mean_cenet_kld_loss = 0
         # -- RND loss
         if self.rnd:
@@ -349,8 +350,15 @@ class PPODreamWAQ:
             
             # clamping reconstruction loss to 10 to avoid large gradients causing NaN issues
             # reconstruction_loss = torch.clamp_max(nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target), 10.0)
-            reconstruction_loss = nn.MSELoss(reduction="sum")(code_vel, vel_target) + nn.MSELoss(reduction="sum")(decode, decode_target)
-            reconstruction_loss = reconstruction_loss / obs_batch.shape[0]  # normalize by batch size
+            lin_vel_reconstruction_loss = nn.MSELoss(reduction="sum")(code_vel, vel_target) / obs_batch.shape[0]
+            obs_reconstruction_loss = nn.MSELoss(reduction="sum")(decode, decode_target) / obs_batch.shape[0]
+            reconstruction_loss = lin_vel_reconstruction_loss + obs_reconstruction_loss
+            # Deterministic linear-velocity reconstruction (logging only — uses mean_vel instead of the
+            # reparameterized code_vel, so the metric reflects what the encoder predicts at inference time).
+            with torch.no_grad():
+                lin_vel_reconstruction_mean_loss = (
+                    nn.MSELoss(reduction="sum")(mean_vel, vel_target) / obs_batch.shape[0]
+                )
             kld_loss = (-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp(), dim=1)).mean(dim=0)
             autoenc_loss = reconstruction_loss + beta * kld_loss
             
@@ -469,6 +477,7 @@ class PPODreamWAQ:
             mean_surrogate_loss += surrogate_loss.item()
             mean_autoenc_loss += autoenc_loss.item()
             mean_cenet_reconstruction_loss += reconstruction_loss.item()
+            mean_cenet_lin_vel_reconstruction_loss += lin_vel_reconstruction_mean_loss.item()
             mean_cenet_kld_loss += kld_loss.item()
             mean_entropy += entropy_batch.mean().item()
             # -- RND loss
@@ -484,6 +493,7 @@ class PPODreamWAQ:
         mean_surrogate_loss /= num_updates
         mean_autoenc_loss /= num_updates
         mean_cenet_reconstruction_loss /= num_updates
+        mean_cenet_lin_vel_reconstruction_loss /= num_updates
         mean_cenet_kld_loss /= num_updates
         mean_entropy /= num_updates
         # -- For RND
@@ -501,6 +511,7 @@ class PPODreamWAQ:
             "surrogate": mean_surrogate_loss,
             "cenet": mean_autoenc_loss,
             "cenet_reconstruction": mean_cenet_reconstruction_loss,
+            "cenet_lin_vel_reconstruction": mean_cenet_lin_vel_reconstruction_loss,
             "cenet_kld": mean_cenet_kld_loss,
         }
         if self.rnd:
