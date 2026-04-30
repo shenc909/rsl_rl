@@ -34,8 +34,9 @@ class WandbSummaryWriter(SummaryWriter):
         except KeyError:
             entity = None
 
-        # Initialize wandb
-        wandb.init(project=project, entity=entity, name=run_name)
+        # Initialize wandb. monitor_gym=True patches gymnasium's RecordVideo so
+        # any mp4 the wrapper finalizes is auto-uploaded to the wandb run.
+        wandb.init(project=project, entity=entity, name=run_name, monitor_gym=True)
 
         # Add log directory to wandb
         wandb.config.update({"log_dir": log_dir})
