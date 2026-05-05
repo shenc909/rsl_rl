@@ -15,11 +15,12 @@ class ActorCriticDWAQ(nn.Module):
         obs,
         obs_groups,
         num_actions,
-        cenet_in_dim, 
+        cenet_in_dim,
         cenet_out_dim,
         cenet_encoder_hidden_dims=[128],
         cenet_decoder_hidden_dims=[128,64],
         cenet_decoder_out_dim=46,
+        cenet_beta=5.0,
         actor_obs_normalization=False,
         critic_obs_normalization=False, 
         actor_hidden_dims=[256, 256, 256],
@@ -53,6 +54,7 @@ class ActorCriticDWAQ(nn.Module):
         self.use_height_scan = use_height_scan
         self.history_length = history_length
         self.obs_hist_dict = obs_hist_dict
+        self.cenet_beta = cenet_beta
         
         # generate history indices since obs history stacks using AAABBBCCC instead of ABCABCABC
         # assume obs_history is a history of obs of length n, including the current obs

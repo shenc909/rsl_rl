@@ -203,7 +203,9 @@ class PPODreamWAQ:
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
 
-    def update(self, beta=5.0):  # noqa: C901
+    def update(self, beta=None):  # noqa: C901
+        if beta is None:
+            beta = self.policy.cenet_beta
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
