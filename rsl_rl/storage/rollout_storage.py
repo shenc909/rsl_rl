@@ -124,7 +124,49 @@ class RolloutStorage:
     def clear(self):
         self.step = 0
 
+    def _report_nonfinite(self, last_values) -> bool:
+        """Localize NaN/Inf in the rollout before they get smeared by advantage normalization.
+
+        Returns ``True`` if any non-finite value was found. Reports, per source, the number of
+        offending elements and the earliest (step, env) it appears at. For observations it also
+        reports the offending feature columns, which map to obs terms in config order.
+        """
+        found = False
+
+        def _scan(tensor: torch.Tensor, name: str):
+            nonlocal found
+            bad = ~torch.isfinite(tensor)
+            if not bad.any():
+                return
+            found = True
+            n = int(bad.sum())
+            idx = bad.nonzero(as_tuple=False)
+            first = idx[0].tolist()
+            print(f"[nonfinite] {name}: {n} bad elem(s); shape={tuple(tensor.shape)}; first idx (step,env,...)={first}")
+
+        _scan(self.rewards, "rewards")
+        _scan(self.values, "values")
+        _scan(last_values, "last_values")
+        for key, value in self.observations.items():
+            bad = ~torch.isfinite(value)
+            if not bad.any():
+                continue
+            found = True
+            # collapse to feature columns so they can be mapped back to obs terms
+            feat_bad = bad.flatten(0, 1).any(dim=0)
+            cols = feat_bad.nonzero(as_tuple=False).flatten().tolist()
+            print(f"[nonfinite] obs['{key}']: {int(bad.sum())} bad elem(s); offending feature cols={cols}")
+
+        return found
+
     def compute_returns(self, last_values, gamma, lam, normalize_advantage: bool = True):
+        # Localize and neutralize non-finite values before advantage normalization spreads a single
+        # NaN/Inf across the whole buffer (see advantages.mean() below).
+        if self._report_nonfinite(last_values):
+            self.rewards = torch.nan_to_num(self.rewards, nan=0.0, posinf=0.0, neginf=0.0)
+            self.values = torch.nan_to_num(self.values, nan=0.0, posinf=0.0, neginf=0.0)
+            last_values = torch.nan_to_num(last_values, nan=0.0, posinf=0.0, neginf=0.0)
+
         advantage = 0
         for step in reversed(range(self.num_transitions_per_env)):
             # if we are at the last step, bootstrap the return value
