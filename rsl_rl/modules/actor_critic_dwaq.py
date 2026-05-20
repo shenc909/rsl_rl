@@ -148,8 +148,7 @@ class ActorCriticDWAQ(nn.Module):
         raise NotImplementedError
     
     def reparameterise(self,mean,logvar):
-        #clamp logvar to avoid inf or nan, based on VAE implementation by huggingface
-        logvar = torch.clamp(logvar, min=-30.0, max=3.22)
+        # logvar = torch.clamp(logvar, min=-30.0, max=3.22)
         std = torch.exp(logvar*0.5)
         code_temp = torch.randn_like(std)
         code = mean + std*code_temp
@@ -165,6 +164,11 @@ class ActorCriticDWAQ(nn.Module):
         logvar_latent = self.encode_logvar_latent(distribution)
         if not check_safe(logvar_latent):
             print("cenet logvar has nan or inf")
+        # Clamp here (not only in reparameterise) so the KL term in ppo_dreamwaq.py,
+        # which computes exp(logvar_latent), can't drive d(KL)/d(logvar) to infinity
+        # and corrupt encode_logvar_latent.weight via Adam.
+        # clamp logvar to avoid inf or nan, based on VAE implementation by huggingface
+        logvar_latent = logvar_latent.clamp(-30.0, 3.22)
         # var = torch.exp(logvar_latent*0.5)
         # code_temp = torch.randn_like(var)
         # code = mean_latent + var*code_temp
@@ -175,6 +179,7 @@ class ActorCriticDWAQ(nn.Module):
         logvar_vel = self.encode_logvar_vel(distribution)
         if not check_safe(logvar_vel):
             print("cenet logvar_vel has nan or inf")
+        logvar_vel = logvar_vel.clamp(-30.0, 3.22)
         code_latent = self.reparameterise(mean_latent,logvar_latent)
         if not check_safe(code_latent):
             print("cenet code_latent has nan or inf")
