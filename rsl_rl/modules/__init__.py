@@ -12,6 +12,9 @@ from .student_teacher import StudentTeacher
 from .student_teacher_recurrent import StudentTeacherRecurrent
 from .symmetry import *
 from .actor_critic_dwaq import ActorCriticDWAQ
+from .pointnet import PointNetEncoder, HeightmapDecoder
+from .mlp_mixer import MLPMixerFusion
+from .actor_critic_dwaq_perception import ActorCriticDWAQPerception
 
 __all__ = [
     "ActorCritic",
@@ -19,4 +22,8 @@ __all__ = [
     "StudentTeacher",
     "StudentTeacherRecurrent",
     "ActorCriticDWAQ",
+    "ActorCriticDWAQPerception",
+    "PointNetEncoder",
+    "HeightmapDecoder",
+    "MLPMixerFusion",
 ]

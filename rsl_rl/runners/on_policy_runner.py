@@ -13,7 +13,7 @@ import warnings
 from collections import deque
 
 import rsl_rl
-from rsl_rl.algorithms import PPO, Distillation, PPODreamWAQ
+from rsl_rl.algorithms import PPO, Distillation, PPODreamWAQ, PPODreamWAQPerception
 from rsl_rl.env import VecEnv
 from rsl_rl.utils import resolve_obs_groups, store_code_state
 from rsl_rl.modules import (
@@ -23,6 +23,7 @@ from rsl_rl.modules import (
     StudentTeacher,
     StudentTeacherRecurrent,
     ActorCriticDWAQ,
+    ActorCriticDWAQPerception,
     resolve_rnd_config,
     resolve_symmetry_config
 )
@@ -114,7 +115,14 @@ class OnPolicyRunner:
                     # Sample actions
                     
                     actions = self.alg.act(obs)
-                    
+
+                    # DreamWaQ++ perception: push the policy's estimated body velocity to the env so its
+                    # point-cloud accumulation term can dead-reckon past scans into the current frame.
+                    # Double-guarded -> strict no-op for every policy/env that doesn't opt in.
+                    _env = getattr(self.env, "unwrapped", self.env)
+                    if hasattr(self.alg.policy, "estimated_vel") and hasattr(_env, "set_estimated_base_vel"):
+                        _env.set_estimated_base_vel(self.alg.policy.estimated_vel)
+
                     if torch.isnan(actions).any():
                         print(torch.isnan(actions).nonzero(as_tuple=False))
                         raise ValueError("NaN detected in actions")
