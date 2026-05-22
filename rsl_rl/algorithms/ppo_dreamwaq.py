@@ -117,6 +117,14 @@ class PPODreamWAQ:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+
+        # CENet beta-VAE schedule: anneal KL weight from ~0 -> beta_target over the first
+        # cenet_beta_warmup_iters updates, and apply free-bits (per-dim KLD floor) to prevent
+        # posterior collapse (KLD was pinned to ~0 with a constant beta=5.0).
+        self.cenet_beta_target = 0.25
+        self.cenet_beta_warmup_iters = 800
+        self.cenet_free_bits = 0.5  # nats per latent dimension
+        self.cenet_update_count = 0
         self.prev_obs = None
 
     def init_storage(
@@ -203,7 +211,13 @@ class PPODreamWAQ:
             last_values, self.gamma, self.lam, normalize_advantage=not self.normalize_advantage_per_mini_batch
         )
 
-    def update(self, beta=5.0):  # noqa: C901
+    def update(self, beta=None):  # noqa: C901
+        # Linear KL warmup: beta ramps 0 -> cenet_beta_target over cenet_beta_warmup_iters updates.
+        if beta is None:
+            warmup = min(1.0, self.cenet_update_count / max(1, self.cenet_beta_warmup_iters))
+            beta = self.cenet_beta_target * warmup
+        self.cenet_update_count += 1
+
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
@@ -351,7 +365,14 @@ class PPODreamWAQ:
             # reconstruction_loss = torch.clamp_max(nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target), 10.0)
             reconstruction_loss = nn.MSELoss(reduction="sum")(code_vel, vel_target) + nn.MSELoss(reduction="sum")(decode, decode_target)
             reconstruction_loss = reconstruction_loss / obs_batch.shape[0]  # normalize by batch size
-            kld_loss = (-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp(), dim=1)).mean(dim=0)
+            # clamp logvar to the same range used in reparameterise() so exp(logvar) in the
+            # KLD term cannot overflow (unclamped logvar -> exp() -> inf/nan -> grad explosion)
+            logvar_latent = torch.clamp(logvar_latent, min=-30.0, max=3.22)
+            # per-dimension KLD, then apply free bits: don't penalize dims already below the
+            # cenet_free_bits floor, so the optimizer can't drive the latent to full collapse.
+            kld_per_dim = -0.5 * (1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp())
+            kld_loss_raw = kld_per_dim.sum(dim=1).mean(dim=0)  # for logging (true KLD)
+            kld_loss = torch.clamp_min(kld_per_dim, self.cenet_free_bits).sum(dim=1).mean(dim=0)
             autoenc_loss = reconstruction_loss + beta * kld_loss
             
             # Surrogate loss
@@ -469,7 +490,7 @@ class PPODreamWAQ:
             mean_surrogate_loss += surrogate_loss.item()
             mean_autoenc_loss += autoenc_loss.item()
             mean_cenet_reconstruction_loss += reconstruction_loss.item()
-            mean_cenet_kld_loss += kld_loss.item()
+            mean_cenet_kld_loss += kld_loss_raw.item()  # log true KLD (pre free-bits) to monitor collapse
             mean_entropy += entropy_batch.mean().item()
             # -- RND loss
             if mean_rnd_loss is not None:
