@@ -7,6 +7,7 @@ from tensordict import TensorDict
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
 from rsl_rl.modules.pointnet import PointNetEncoder, HeightmapDecoder
+from rsl_rl.modules.bev_encoder import BEVGridEncoder
 from rsl_rl.modules.mlp_mixer import MLPMixerFusion
 from rsl_rl.utils.safety_utils import check_safe
 
@@ -50,13 +51,16 @@ class ActorCriticDWAQPerception(nn.Module):
         mixer_hidden_dim=256,
         mixer_num_blocks=1,
         perception_beta=1.0,
+        extero_use_mean=False,
+        extero_deterministic=False,
         **kwargs,
     ):
-        if kwargs:
-            print(
-                "ActorCritic.__init__ got unexpected arguments, which will be ignored: "
-                + str([key for key in kwargs.keys()])
-            )
+        # extra kwargs (e.g. bev_* for the BEV encoder subclass) are stashed for _build_extero_encoder;
+        # only warn about genuinely-unknown keys.
+        self._extero_kwargs = dict(kwargs)
+        unknown = [k for k in kwargs if not k.startswith("bev_")]
+        if unknown:
+            print("ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str(unknown))
         super().__init__()
 
         # get the observation dimensions
@@ -96,16 +100,26 @@ class ActorCriticDWAQPerception(nn.Module):
             sum += dim * self.history_length
         # print(self.history_indices)
 
-        # perception (DreamWaQ++): exteroceptive PointNet encoder + heightmap decoder + mixer fusion
+        # perception (DreamWaQ++): exteroceptive encoder + heightmap decoder + mixer fusion
         self.point_cloud_group = point_cloud_group
         self.point_cloud_num_points = point_cloud_num_points
         self.point_feat_dim = point_feat_dim
         self.perception_beta = perception_beta
-        self.pointnet = PointNetEncoder(
+        # when set, the actor consumes the deterministic latent mean instead of the sampled z_pe
+        # (avoids feeding sampled noise into the policy under VAE posterior collapse)
+        self.extero_use_mean = extero_use_mean
+        # when set, run the extero branch as a plain (deterministic) autoencoder: the actor and the
+        # heightmap reconstruction both use the mean, and the KL term should be disabled via
+        # perception_beta=0 -- otherwise the KL pulls the mean to 0 and the latent collapses.
+        self.extero_deterministic = extero_deterministic
+        if extero_deterministic:
+            self.extero_use_mean = True
+        # built via a hook so subclasses can swap the encoder (e.g. BEV grid CNN) without re-implementing
+        self.pointnet = self._build_extero_encoder(
             latent_dim=pointnet_latent_dim,
-            point_feat_dim=point_feat_dim,
-            shared_mlp_dims=pointnet_shared_mlp_dims,
             activation=activation,
+            point_feat_dim=point_feat_dim,
+            pointnet_shared_mlp_dims=pointnet_shared_mlp_dims,
             use_confidence_filter=use_confidence_filter,
             mask_origin=mask_origin,
             origin_eps=origin_eps,
@@ -281,6 +295,31 @@ class ActorCriticDWAQPerception(nn.Module):
             print(std)
         self.distribution = Normal(mean, std)
 
+    def _build_extero_encoder(
+        self,
+        latent_dim,
+        activation,
+        point_feat_dim,
+        pointnet_shared_mlp_dims,
+        use_confidence_filter,
+        mask_origin,
+        origin_eps,
+    ):
+        """Build the exteroceptive encoder. Base: PointNet over the accumulated point cloud.
+
+        Subclasses override to swap the encoder (e.g. a BEV-grid CNN), reading their own params from
+        ``self._extero_kwargs``. Must return a module whose ``forward`` yields ``(z, mean, logvar, global_feat)``.
+        """
+        return PointNetEncoder(
+            latent_dim=latent_dim,
+            point_feat_dim=point_feat_dim,
+            shared_mlp_dims=pointnet_shared_mlp_dims,
+            activation=activation,
+            use_confidence_filter=use_confidence_filter,
+            mask_origin=mask_origin,
+            origin_eps=origin_eps,
+        )
+
     def act(self, obs, **kwargs):
         actor_obs = self.get_actor_obs(obs)
 
@@ -295,7 +334,8 @@ class ActorCriticDWAQPerception(nn.Module):
         # cache the estimated body velocity so the runner can push it to the env for SE(3)
         # point-cloud accumulation (deployment mirror: the runtime feeds it back, never into the policy)
         self.estimated_vel = mean_vel.detach()
-        z_pe, _, _, _ = self.pointnet(self.get_point_cloud_obs(obs))
+        z_pe, mean_pe, _, _ = self.pointnet(self.get_point_cloud_obs(obs))
+        z_pe = mean_pe if self.extero_use_mean else z_pe
         if not check_safe(z_pe):
             print("z_pe has nan or inf")
         observations = torch.cat((self.mixer(code, z_pe), actor_obs), dim=-1)
@@ -310,7 +350,8 @@ class ActorCriticDWAQPerception(nn.Module):
         history_obs = self.get_history_obs(obs)
         code, _, decode, mean_vel, _, _, _ = self.cenet_forward(history_obs)
         self.estimated_vel = mean_vel.detach()
-        z_pe, _, _, _ = self.pointnet(self.get_point_cloud_obs(obs))
+        z_pe, mean_pe, _, _ = self.pointnet(self.get_point_cloud_obs(obs))
+        z_pe = mean_pe if self.extero_use_mean else z_pe
         observations = torch.cat((self.mixer(code, z_pe), actor_obs), dim=-1)
         return self.actor(observations)
 
@@ -369,7 +410,10 @@ class ActorCriticDWAQPerception(nn.Module):
         ``PPODreamWAQPerception`` (MSE against ``get_height_scan_target`` + ``perception_beta`` * KL).
         """
         z_pe, mean_pe, logvar_pe, _ = self.pointnet(self.get_point_cloud_obs(obs))
-        recon = self.heightmap_decoder(z_pe)
+        # deterministic mode: reconstruct from the mean (the latent the actor consumes) and rely on
+        # perception_beta=0 to drop the KL -- a plain autoencoder that cannot posterior-collapse.
+        latent = mean_pe if self.extero_deterministic else z_pe
+        recon = self.heightmap_decoder(latent)
         return recon, mean_pe, logvar_pe
 
     def get_height_scan_target(self, obs):
@@ -423,3 +467,25 @@ class ActorCriticDWAQPerception(nn.Module):
 
         super().load_state_dict(state_dict, strict=strict)
         return True
+
+
+class ActorCriticDWAQPerceptionBEV(ActorCriticDWAQPerception):
+    """DreamWaQ++ perception actor-critic with a BEV-grid CNN exteroceptive encoder.
+
+    Identical to :class:`ActorCriticDWAQPerception` except the point-cloud PointNet is replaced by a
+    small 2D CNN over a body-frame BEV heightmap grid (:class:`BEVGridEncoder`). The exteroceptive obs
+    group (``point_cloud_group``, set to ``"bev"``) carries the flattened grid; CENet, mixer, heightmap
+    reconstruction and the algorithm are unchanged. ``pointnet_latent_dim`` still sets the extero latent
+    width (and thus the mixer / heightmap-decoder input). BEV-specific dims arrive via ``bev_*`` kwargs.
+    """
+
+    def _build_extero_encoder(self, latent_dim, activation, **_):
+        bev = self._extero_kwargs
+        return BEVGridEncoder(
+            latent_dim=latent_dim,
+            in_channels=int(bev.get("bev_in_channels", 2)),
+            grid_hw=tuple(bev.get("bev_grid_hw", (17, 11))),
+            cnn_channels=list(bev.get("bev_cnn_channels", [16, 32])),
+            head_dim=int(bev.get("bev_head_dim", 128)),
+            activation=activation,
+        )

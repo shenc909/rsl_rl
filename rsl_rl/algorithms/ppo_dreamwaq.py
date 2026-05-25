@@ -35,6 +35,7 @@ class PPODreamWAQ:
         lam=0.95,
         value_loss_coef=1.0,
         entropy_coef=0.01,
+        vel_loss_coef=1.0,
         learning_rate=0.001,
         max_grad_norm=1.0,
         use_clipped_value_loss=True,
@@ -109,6 +110,7 @@ class PPODreamWAQ:
         self.num_mini_batches = num_mini_batches
         self.value_loss_coef = value_loss_coef
         self.entropy_coef = entropy_coef
+        self.vel_loss_coef = vel_loss_coef
         self.gamma = gamma
         self.lam = lam
         self.max_grad_norm = max_grad_norm
@@ -354,7 +356,9 @@ class PPODreamWAQ:
             # reconstruction_loss = torch.clamp_max(nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target), 10.0)
             lin_vel_reconstruction_loss = nn.MSELoss(reduction="sum")(code_vel, vel_target) / obs_batch.shape[0]
             obs_reconstruction_loss = nn.MSELoss(reduction="sum")(decode, decode_target) / obs_batch.shape[0]
-            reconstruction_loss = lin_vel_reconstruction_loss + obs_reconstruction_loss
+            # Upweight the (3-dim) velocity term so it isn't drowned out by the full obs-reconstruction
+            # term, which is ~an order of magnitude larger and otherwise dominates the gradient.
+            reconstruction_loss = self.vel_loss_coef * lin_vel_reconstruction_loss + obs_reconstruction_loss
             # Deterministic linear-velocity reconstruction (logging only — uses mean_vel instead of the
             # reparameterized code_vel, so the metric reflects what the encoder predicts at inference time).
             with torch.no_grad():

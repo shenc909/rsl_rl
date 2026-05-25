@@ -13,8 +13,9 @@ from .student_teacher_recurrent import StudentTeacherRecurrent
 from .symmetry import *
 from .actor_critic_dwaq import ActorCriticDWAQ
 from .pointnet import PointNetEncoder, HeightmapDecoder
+from .bev_encoder import BEVGridEncoder
 from .mlp_mixer import MLPMixerFusion
-from .actor_critic_dwaq_perception import ActorCriticDWAQPerception
+from .actor_critic_dwaq_perception import ActorCriticDWAQPerception, ActorCriticDWAQPerceptionBEV
 
 __all__ = [
     "ActorCritic",
@@ -23,7 +24,9 @@ __all__ = [
     "StudentTeacherRecurrent",
     "ActorCriticDWAQ",
     "ActorCriticDWAQPerception",
+    "ActorCriticDWAQPerceptionBEV",
     "PointNetEncoder",
+    "BEVGridEncoder",
     "HeightmapDecoder",
     "MLPMixerFusion",
 ]

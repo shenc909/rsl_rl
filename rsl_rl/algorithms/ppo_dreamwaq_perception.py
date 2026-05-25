@@ -36,6 +36,7 @@ class PPODreamWAQPerception:
         lam=0.95,
         value_loss_coef=1.0,
         entropy_coef=0.01,
+        vel_loss_coef=1.0,
         learning_rate=0.001,
         max_grad_norm=1.0,
         use_clipped_value_loss=True,
@@ -110,6 +111,7 @@ class PPODreamWAQPerception:
         self.num_mini_batches = num_mini_batches
         self.value_loss_coef = value_loss_coef
         self.entropy_coef = entropy_coef
+        self.vel_loss_coef = vel_loss_coef
         self.gamma = gamma
         self.lam = lam
         self.max_grad_norm = max_grad_norm
@@ -211,6 +213,10 @@ class PPODreamWAQPerception:
         mean_autoenc_loss = 0
         mean_cenet_reconstruction_loss = 0
         mean_cenet_lin_vel_reconstruction_loss = 0
+        # Velocity reconstruction error in real m/s (denormalized). Accumulate squared error so the
+        # final per-axis / vector RMS is taken over all minibatches rather than averaging RMS values.
+        mean_cenet_lin_vel_recon_mse_mps = 0.0
+        mean_cenet_lin_vel_recon_mse_mps_axes = torch.zeros(3, device=self.device)
         mean_cenet_kld_loss = 0
         # -- Perception (DreamWaQ++) exteroceptive VAE loss
         self._has_perception = hasattr(self.policy, "perception_forward")
@@ -360,13 +366,26 @@ class PPODreamWAQPerception:
             # reconstruction_loss = torch.clamp_max(nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target), 10.0)
             lin_vel_reconstruction_loss = nn.MSELoss(reduction="sum")(code_vel, vel_target) / obs_batch.shape[0]
             obs_reconstruction_loss = nn.MSELoss(reduction="sum")(decode, decode_target) / obs_batch.shape[0]
-            reconstruction_loss = lin_vel_reconstruction_loss + obs_reconstruction_loss
+            # Upweight the (3-dim) velocity term so it isn't drowned out by the full obs-reconstruction
+            # term, which is ~an order of magnitude larger and otherwise dominates the gradient.
+            reconstruction_loss = self.vel_loss_coef * lin_vel_reconstruction_loss + obs_reconstruction_loss
             # Deterministic linear-velocity reconstruction (logging only — uses mean_vel instead of the
             # reparameterized code_vel, so the metric reflects what the encoder predicts at inference time).
             with torch.no_grad():
                 lin_vel_reconstruction_mean_loss = (
                     nn.MSELoss(reduction="sum")(mean_vel, vel_target) / obs_batch.shape[0]
                 )
+                # Convert the (normalized) velocity reconstruction error to real m/s. vel_target and
+                # mean_vel live in the critic-obs normalizer's whitened space ((x-mean)/std), so undo
+                # the per-component std scaling to recover m/s. Body linear velocity is critic-obs [3:6].
+                normalizer = self.policy.critic_obs_normalizer
+                if hasattr(normalizer, "_std"):
+                    vel_std = normalizer._std[:, 3:6] + getattr(normalizer, "eps", 0.0)
+                else:  # Identity normalizer -> already in m/s
+                    vel_std = torch.ones(1, 3, device=mean_vel.device)
+                vel_err_mps = (mean_vel - vel_target) * vel_std  # (B, 3), m/s
+                lin_vel_recon_mse_mps_axes = vel_err_mps.pow(2).mean(dim=0)  # (3,), (m/s)^2 per axis
+                lin_vel_recon_mse_mps = lin_vel_recon_mse_mps_axes.sum()  # scalar 3-D vector MSE
             kld_loss = (-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp(), dim=1)).mean(
                 dim=0
             )
@@ -511,6 +530,8 @@ class PPODreamWAQPerception:
             mean_autoenc_loss += autoenc_loss.item()
             mean_cenet_reconstruction_loss += reconstruction_loss.item()
             mean_cenet_lin_vel_reconstruction_loss += lin_vel_reconstruction_mean_loss.item()
+            mean_cenet_lin_vel_recon_mse_mps += lin_vel_recon_mse_mps.item()
+            mean_cenet_lin_vel_recon_mse_mps_axes += lin_vel_recon_mse_mps_axes.detach()
             mean_cenet_kld_loss += kld_loss.item()
             mean_perception_loss += perception_loss.item()
             mean_perception_reconstruction_loss += perception_reconstruction_loss.item()
@@ -530,6 +551,9 @@ class PPODreamWAQPerception:
         mean_autoenc_loss /= num_updates
         mean_cenet_reconstruction_loss /= num_updates
         mean_cenet_lin_vel_reconstruction_loss /= num_updates
+        # mean MSE over all minibatches -> RMS (real m/s)
+        lin_vel_recon_rms_mps = (mean_cenet_lin_vel_recon_mse_mps / num_updates) ** 0.5
+        lin_vel_recon_rms_mps_axes = (mean_cenet_lin_vel_recon_mse_mps_axes / num_updates).sqrt().tolist()
         mean_cenet_kld_loss /= num_updates
         mean_perception_loss /= num_updates
         mean_perception_reconstruction_loss /= num_updates
@@ -551,6 +575,10 @@ class PPODreamWAQPerception:
             "cenet": mean_autoenc_loss,
             "cenet_reconstruction": mean_cenet_reconstruction_loss,
             "cenet_lin_vel_reconstruction": mean_cenet_lin_vel_reconstruction_loss,
+            "cenet_lin_vel_reconstruction_mps": lin_vel_recon_rms_mps,
+            "cenet_lin_vel_reconstruction_mps_x": lin_vel_recon_rms_mps_axes[0],
+            "cenet_lin_vel_reconstruction_mps_y": lin_vel_recon_rms_mps_axes[1],
+            "cenet_lin_vel_reconstruction_mps_z": lin_vel_recon_rms_mps_axes[2],
             "cenet_kld": mean_cenet_kld_loss,
             "perception": mean_perception_loss,
             "perception_reconstruction": mean_perception_reconstruction_loss,
