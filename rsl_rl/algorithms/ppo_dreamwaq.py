@@ -126,6 +126,10 @@ class PPODreamWAQ:
         self.cenet_free_bits = 0.5  # nats per latent dimension
         self.cenet_update_count = 0
         self.prev_obs = None
+        # Privileged per-foot contact estimation: BCE on the contact head against ground-truth
+        # binary foot contact (read raw from the critic obs). Lets the blind policy "feel" contact
+        # from proprioception without depending on the (unreliable) hardware foot-force sensor.
+        self.contact_loss_coef = 1.0
 
     def init_storage(
         self, training_type, num_envs, num_transitions_per_env, obs, actions_shape
@@ -224,6 +228,8 @@ class PPODreamWAQ:
         mean_autoenc_loss = 0
         mean_cenet_reconstruction_loss = 0
         mean_cenet_kld_loss = 0
+        mean_cenet_contact_loss = 0
+        mean_cenet_contact_acc = 0
         # -- RND loss
         if self.rnd:
             mean_rnd_loss = 0
@@ -351,14 +357,16 @@ class PPODreamWAQ:
                         param_group["lr"] = self.learning_rate
 
             #Beta VAE loss
-            code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent = self.policy.cenet_forward(self.policy.get_history_obs(obs_batch))
+            code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent,contact_logits = self.policy.cenet_forward(self.policy.get_history_obs(obs_batch))
 
             # NOTE: Update prev critic obs batch indices to get the correct elements for linear body velocity
             # vel_target = self.policy.get_vel_target(prev_obs_batch)
             vel_target = self.policy.get_vel_target(obs_batch)
             decode_target = self.policy.get_actor_obs(obs_batch)
+            contact_target = self.policy.get_contact_target(obs_batch)
             vel_target.requires_grad = False
             decode_target.requires_grad = False
+            contact_target.requires_grad = False
             # autoenc_loss = (nn.MSELoss()(code_vel,vel_target) + nn.MSELoss()(decode,decode_target) + beta*(-0.5 * torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp())))/self.num_mini_batches
             
             # clamping reconstruction loss to 10 to avoid large gradients causing NaN issues
@@ -373,7 +381,11 @@ class PPODreamWAQ:
             kld_per_dim = -0.5 * (1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp())
             kld_loss_raw = kld_per_dim.sum(dim=1).mean(dim=0)  # for logging (true KLD)
             kld_loss = torch.clamp_min(kld_per_dim, self.cenet_free_bits).sum(dim=1).mean(dim=0)
-            autoenc_loss = reconstruction_loss + beta * kld_loss
+            # privileged contact estimation: BCE on the contact head vs raw binary foot contact
+            contact_loss = nn.BCEWithLogitsLoss()(contact_logits, contact_target)
+            with torch.no_grad():
+                contact_acc = ((torch.sigmoid(contact_logits) > 0.5).float() == contact_target).float().mean()
+            autoenc_loss = reconstruction_loss + beta * kld_loss + self.contact_loss_coef * contact_loss
             
             # Surrogate loss
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
@@ -491,6 +503,8 @@ class PPODreamWAQ:
             mean_autoenc_loss += autoenc_loss.item()
             mean_cenet_reconstruction_loss += reconstruction_loss.item()
             mean_cenet_kld_loss += kld_loss_raw.item()  # log true KLD (pre free-bits) to monitor collapse
+            mean_cenet_contact_loss += contact_loss.item()
+            mean_cenet_contact_acc += contact_acc.item()
             mean_entropy += entropy_batch.mean().item()
             # -- RND loss
             if mean_rnd_loss is not None:
@@ -506,6 +520,8 @@ class PPODreamWAQ:
         mean_autoenc_loss /= num_updates
         mean_cenet_reconstruction_loss /= num_updates
         mean_cenet_kld_loss /= num_updates
+        mean_cenet_contact_loss /= num_updates
+        mean_cenet_contact_acc /= num_updates
         mean_entropy /= num_updates
         # -- For RND
         if mean_rnd_loss is not None:
@@ -523,6 +539,8 @@ class PPODreamWAQ:
             "cenet": mean_autoenc_loss,
             "cenet_reconstruction": mean_cenet_reconstruction_loss,
             "cenet_kld": mean_cenet_kld_loss,
+            "cenet_contact": mean_cenet_contact_loss,
+            "cenet_contact_acc": mean_cenet_contact_acc,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss

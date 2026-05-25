@@ -110,11 +110,15 @@ class ActorCriticDWAQ(nn.Module):
         #     self.activation,
         # )
         self.encoder = MLP(cenet_in_dim,64,cenet_encoder_hidden_dims,activation)
-        
-        self.encode_mean_latent = nn.Linear(64,cenet_out_dim-3)
-        self.encode_logvar_latent = nn.Linear(64,cenet_out_dim-3)
+
+        # CENet code layout: [vel (3) | contact (num_contact) | latent (rest)] = cenet_out_dim
+        self.num_contact = 4  # per-foot contact estimate (privileged distillation target)
+        self.encode_mean_latent = nn.Linear(64,cenet_out_dim-3-self.num_contact)
+        self.encode_logvar_latent = nn.Linear(64,cenet_out_dim-3-self.num_contact)
         self.encode_mean_vel = nn.Linear(64,3)
         self.encode_logvar_vel = nn.Linear(64,3)
+        # deterministic contact head: raw logits (sigmoid applied where consumed / BCEWithLogits on logits)
+        self.encode_contact = nn.Linear(64,self.num_contact)
 
         self.decoder = MLP(cenet_out_dim,cenet_decoder_out_dim,cenet_decoder_hidden_dims,activation)
         # self.decoder = nn.Sequential(
@@ -173,17 +177,22 @@ class ActorCriticDWAQ(nn.Module):
         logvar_vel = self.encode_logvar_vel(distribution)
         if not check_safe(logvar_vel):
             print("cenet logvar_vel has nan or inf")
+        contact_logits = self.encode_contact(distribution)
+        if not check_safe(contact_logits):
+            print("cenet contact_logits has nan or inf")
+        contact_prob = torch.sigmoid(contact_logits)
         code_latent = self.reparameterise(mean_latent,logvar_latent)
         if not check_safe(code_latent):
             print("cenet code_latent has nan or inf")
         code_vel = self.reparameterise(mean_vel,logvar_vel)
         if not check_safe(code_vel):
             print("cenet code_vel has nan or inf")
-        code = torch.cat((code_vel,code_latent),dim=-1)
+        # code layout: [vel (3) | contact_prob (num_contact) | latent (rest)]
+        code = torch.cat((code_vel,contact_prob,code_latent),dim=-1)
         decode = self.decoder(code)
         if not check_safe(decode):
             print("cenet decode has nan or inf")
-        return code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent
+        return code,code_vel,decode,mean_vel,logvar_vel,mean_latent,logvar_latent,contact_logits
 
     @property
     def action_mean(self):
@@ -235,7 +244,7 @@ class ActorCriticDWAQ(nn.Module):
         history_obs = self.get_history_obs(obs)
         if not check_safe(history_obs):
             print("history obs has nan or inf")
-        code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
+        code,_,decode,_,_,_,_,_ = self.cenet_forward(history_obs)
         if not check_safe(code):
             print("code has nan or inf")
         if self.use_height_scan:
@@ -254,7 +263,7 @@ class ActorCriticDWAQ(nn.Module):
     def act_inference(self, obs, **kwargs):
         actor_obs = self.get_actor_obs(obs)
         history_obs = self.get_history_obs(obs)
-        code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
+        code,_,decode,_,_,_,_,_ = self.cenet_forward(history_obs)
         if self.use_height_scan:
             height_scan_obs = self.get_curr_height_scan_obs(obs)
             observations = torch.cat((code,actor_obs,height_scan_obs),dim=-1)
@@ -302,10 +311,18 @@ class ActorCriticDWAQ(nn.Module):
         return zero_obs
 
     def get_vel_target(self, obs):
-        critic_obs = self.get_critic_obs(obs)
-        critic_obs = self.critic_obs_normalizer(critic_obs)
-        lin_vel = critic_obs[:,3:6]
+        # raw (un-normalized) critic obs: base lin_vel is O(1) m/s (clipped +-2), well-scaled for MSE.
+        # Reading raw avoids the moving-target drift and the double-normalization artifact.
+        critic_obs = torch.cat([obs[g] for g in self.obs_groups["critic"]], dim=-1)
+        lin_vel = critic_obs[:, 3:6]
         return lin_vel
+
+    def get_contact_target(self, obs):
+        # raw (un-normalized) critic obs; the privileged binary foot_contact term is the LAST
+        # critic term (appended after body_wrench), so it occupies the final num_contact dims.
+        # Must stay raw 0/1 for BCEWithLogits.
+        critic_obs = torch.cat([obs[g] for g in self.obs_groups["critic"]], dim=-1)
+        return critic_obs[:, -self.num_contact:]
     
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
