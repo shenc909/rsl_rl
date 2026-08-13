@@ -13,7 +13,7 @@ import warnings
 from collections import deque
 
 import rsl_rl
-from rsl_rl.algorithms import PPO, Distillation, PPODreamWAQ, PPODreamWAQPerception
+from rsl_rl.algorithms import PPO, Distillation, PPODreamWAQ, PPODreamWAQPerception, PPOMove
 from rsl_rl.env import VecEnv
 from rsl_rl.utils import resolve_obs_groups, store_code_state
 from rsl_rl.modules import (
@@ -25,6 +25,7 @@ from rsl_rl.modules import (
     ActorCriticDWAQ,
     ActorCriticDWAQPerception,
     ActorCriticDWAQPerceptionBEV,
+    ActorCriticMove,
     resolve_rnd_config,
     resolve_symmetry_config
 )

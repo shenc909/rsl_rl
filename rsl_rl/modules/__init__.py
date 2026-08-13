@@ -16,6 +16,7 @@ from .pointnet import PointNetEncoder, HeightmapDecoder
 from .bev_encoder import BEVGridEncoder
 from .mlp_mixer import MLPMixerFusion
 from .actor_critic_dwaq_perception import ActorCriticDWAQPerception, ActorCriticDWAQPerceptionBEV
+from .actor_critic_move import ActorCriticMove
 
 __all__ = [
     "ActorCritic",
@@ -25,6 +26,7 @@ __all__ = [
     "ActorCriticDWAQ",
     "ActorCriticDWAQPerception",
     "ActorCriticDWAQPerceptionBEV",
+    "ActorCriticMove",
     "PointNetEncoder",
     "BEVGridEncoder",
     "HeightmapDecoder",
