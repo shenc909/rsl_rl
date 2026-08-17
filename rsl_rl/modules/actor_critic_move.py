@@ -115,6 +115,7 @@ class ActorCriticMove(nn.Module):
         # ppo interface
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
+        max_noise_std: float | None = 2.0,
         actor_obs_normalization: bool = False,
         critic_obs_normalization: bool = False,
         cenet_beta: float = 1.0,
@@ -246,6 +247,17 @@ class ActorCriticMove(nn.Module):
 
         # action noise
         self.noise_std_type = noise_std_type
+        # Ceiling on the learned action-noise std. The entropy bonus contributes a CONSTANT gradient
+        # of -entropy_coef per dim to log_std (d/d log_sigma of the Gaussian entropy is exactly 1),
+        # so if the anti-noise reward terms are ever too weak -- or are censored, e.g. by the
+        # only_positive_rewards floor zeroing the gradient on the noisiest steps -- nothing opposes
+        # it and sigma ratchets upward without bound. That happened in run move_terrain_v2
+        # (sigma 0.59 -> 2.67 and climbing) after the joint-acceleration penalty was accidentally
+        # weakened ~6x. Healthy training sits at sigma ~0.4-0.6 from an init of 1.0, so a ceiling of
+        # 2.0 never binds in normal operation; it exists purely to convert a silent, slow
+        # divergence into a visible plateau. No reference repo bounds sigma, so this is a deliberate
+        # safety addition rather than a fidelity choice.
+        self.max_noise_std = max_noise_std
         if self.noise_std_type == "scalar":
             self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         elif self.noise_std_type == "log":
@@ -401,6 +413,10 @@ class ActorCriticMove(nn.Module):
             std = torch.exp(self.log_std).expand_as(mean)
         else:
             raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}")
+        if self.max_noise_std is not None:
+            # clamping in the forward pass also zeroes the entropy gradient above the cap, so there
+            # is no incentive to keep pushing log_std once it saturates
+            std = std.clamp(max=self.max_noise_std)
         if not check_safe(mean):
             print("[ActorCriticMove] action mean has nan/inf")
         self.distribution = Normal(mean, std)

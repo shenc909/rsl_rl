@@ -244,9 +244,19 @@ class PPOMove:
             enc = self.policy.last_encoding  # padded [T, n_traj, ...]
             mask = masks_batch
 
-            # velocity estimation: v_hat vs ground-truth base lin vel (raw m/s)
+            # velocity estimation: v_hat vs ground-truth base lin vel (raw m/s).
+            # Huber rather than plain MSE: falls into the gap terrain produce multi-m/s targets no
+            # estimator can predict, and a squared error on those spikes to 20-40x baseline. Because
+            # gradients are clipped jointly at max_grad_norm, one such spike shrinks the surrogate,
+            # value and every other auxiliary gradient on that iteration -- so the outlier does not
+            # just hurt the estimator, it wastes the whole update.
             vel_target = self.policy.get_vel_target(obs_batch).detach()
-            vel_loss = self._masked_mean(((enc["vel"] - vel_target) ** 2).sum(dim=-1), mask)
+            vel_loss = self._masked_mean(
+                torch.nn.functional.huber_loss(
+                    enc["vel"], vel_target, reduction="none", delta=1.0
+                ).sum(dim=-1),
+                mask,
+            )
 
             # next-obs reconstruction: decode [v_hat, z] -> o_{t+1}; shift inside trajectories
             obs_decode = self.policy.obs_decoder(torch.cat([enc["vel"], enc["z"]], dim=-1))
