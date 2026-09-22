@@ -116,6 +116,7 @@ class ActorCriticMove(nn.Module):
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         max_noise_std: float | None = 2.0,
+        min_noise_std: float | None = None,
         actor_obs_normalization: bool = False,
         critic_obs_normalization: bool = False,
         cenet_beta: float = 1.0,
@@ -258,6 +259,14 @@ class ActorCriticMove(nn.Module):
         # divergence into a visible plateau. No reference repo bounds sigma, so this is a deliberate
         # safety addition rather than a fidelity choice.
         self.max_noise_std = max_noise_std
+        # P1(5), 2026-08-20: a FLOOR on sigma. The parkour repo clamps std >= 0.2 after every PPO
+        # update for exactly this robot class (go2_config.py clip_min_std=0.2, applied in its
+        # ppo.py), because on obstacle terrain the easy local optimum is a cautious gait that never
+        # attempts the climb -- once that wins, a log-parameterized sigma decays exponentially and
+        # exploration collapses before the harder skill is ever sampled. We previously bounded sigma
+        # ABOVE only, i.e. the opposite asymmetry (§46 A1). Applied in the forward pass so the
+        # entropy gradient also vanishes at the floor.
+        self.min_noise_std = min_noise_std
         if self.noise_std_type == "scalar":
             self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         elif self.noise_std_type == "log":
@@ -417,6 +426,8 @@ class ActorCriticMove(nn.Module):
             # clamping in the forward pass also zeroes the entropy gradient above the cap, so there
             # is no incentive to keep pushing log_std once it saturates
             std = std.clamp(max=self.max_noise_std)
+        if self.min_noise_std is not None:
+            std = std.clamp(min=self.min_noise_std)
         if not check_safe(mean):
             print("[ActorCriticMove] action mean has nan/inf")
         self.distribution = Normal(mean, std)
