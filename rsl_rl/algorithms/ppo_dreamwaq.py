@@ -458,8 +458,17 @@ class PPODreamWAQ:
 
             # Apply the gradients
             # -- For PPO
-            nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            self.optimizer.step()
+            # Skip the step if the gradient norm is not finite: a single NaN (e.g. one env's physics blowing up)
+            # otherwise poisons the parameters for good -- a 2026-09-30 fine-tune died this way when the action
+            # log-std went NaN. Checked after the all-reduce, so every GPU sees the same norm and skips together.
+            grad_norm = nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            if torch.isfinite(grad_norm):
+                self.optimizer.step()
+            else:
+                self.optimizer.zero_grad()
+                self.skipped_updates = getattr(self, "skipped_updates", 0) + 1
+                print(f"[ppo_dreamwaq] non-finite gradient norm: optimizer step skipped "
+                      f"({self.skipped_updates} so far)", flush=True)
             # -- For RND
             if self.rnd_optimizer:
                 self.rnd_optimizer.step()
