@@ -31,6 +31,7 @@ class ActorCriticDWAQ(nn.Module):
         history_length=3,
         obs_hist_dict=dict(),
         use_height_scan=False,
+        legacy_normalization=True,
         **kwargs,
     ):
         if kwargs:
@@ -55,6 +56,10 @@ class ActorCriticDWAQ(nn.Module):
         self.history_length = history_length
         self.obs_hist_dict = obs_hist_dict
         self.cenet_beta = cenet_beta
+        # The getters return normalized obs. legacy_normalization=True keeps the old (buggy) training behaviour for
+        # checkpoints trained with it: normalizer stats are updated from already-normalized obs and the CENet velocity
+        # target is normalized twice. Inference is identical either way; use False for new runs.
+        self.legacy_normalization = legacy_normalization
         
         # generate history indices since obs history stacks using AAABBBCCC instead of ABCABCABC
         # assume obs_history is a history of obs of length n, including the current obs
@@ -319,8 +324,9 @@ class ActorCriticDWAQ(nn.Module):
 
     def get_vel_target(self, obs):
         critic_obs = self.get_critic_obs(obs)
-        critic_obs = self.critic_obs_normalizer(critic_obs)
-        lin_vel = critic_obs[:,3:6]
+        if self.legacy_normalization:
+            critic_obs = self.critic_obs_normalizer(critic_obs)
+        lin_vel = critic_obs[:, 3:6]
         return lin_vel
     
     def get_actions_log_prob(self, actions):
@@ -328,12 +334,12 @@ class ActorCriticDWAQ(nn.Module):
     
     def update_normalization(self, obs):
         if self.actor_obs_normalization:
-            actor_obs = self.get_actor_obs(obs)
+            actor_obs = self.get_actor_obs(obs, normalize=self.legacy_normalization)
             self.actor_obs_normalizer.update(actor_obs)
-            history_obs = self.get_history_obs(obs)
+            history_obs = self.get_history_obs(obs, normalize=self.legacy_normalization)
             self.history_obs_normalizer.update(history_obs)
         if self.critic_obs_normalization:
-            critic_obs = self.get_critic_obs(obs)
+            critic_obs = self.get_critic_obs(obs, normalize=self.legacy_normalization)
             self.critic_obs_normalizer.update(critic_obs)
 
     def load_state_dict(self, state_dict, strict=True):
