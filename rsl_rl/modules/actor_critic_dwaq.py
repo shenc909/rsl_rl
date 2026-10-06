@@ -32,6 +32,7 @@ class ActorCriticDWAQ(nn.Module):
         obs_hist_dict=dict(),
         use_height_scan=False,
         legacy_normalization=True,
+        actor_oracle_vel=False,
         **kwargs,
     ):
         if kwargs:
@@ -60,6 +61,9 @@ class ActorCriticDWAQ(nn.Module):
         # checkpoints trained with it: normalizer stats are updated from already-normalized obs and the CENet velocity
         # target is normalized twice. Inference is identical either way; use False for new runs.
         self.legacy_normalization = legacy_normalization
+        # Diagnostic only (not deployable): feed the actor the true base linear velocity (the CENet velocity target)
+        # instead of the CENet estimate. The CENet is still trained, so its estimate can be compared.
+        self.actor_oracle_vel = actor_oracle_vel
         
         # generate history indices since obs history stacks using AAABBBCCC instead of ABCABCABC
         # assume obs_history is a history of obs of length n, including the current obs
@@ -248,6 +252,7 @@ class ActorCriticDWAQ(nn.Module):
         if not check_safe(history_obs):
             print("history obs has nan or inf")
         code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
+        code = self._actor_code(code, obs)
         if not check_safe(code):
             print("code has nan or inf")
         if self.use_height_scan:
@@ -263,10 +268,16 @@ class ActorCriticDWAQ(nn.Module):
         self.update_distribution(observations)
         return self.distribution.sample()
 
+    def _actor_code(self, code, obs):
+        if not self.actor_oracle_vel:
+            return code
+        return torch.cat((self.get_vel_target(obs), code[:, 3:]), dim=-1)
+
     def act_inference(self, obs, **kwargs):
         actor_obs = self.get_actor_obs(obs)
         history_obs = self.get_history_obs(obs)
         code,_,decode,_,_,_,_ = self.cenet_forward(history_obs)
+        code = self._actor_code(code, obs)
         if self.use_height_scan:
             height_scan_obs = self.get_curr_height_scan_obs(obs)
             observations = torch.cat((code,actor_obs,height_scan_obs),dim=-1)
